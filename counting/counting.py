@@ -8,16 +8,13 @@ class FrameCounter:
     excluded_prefixes = (sys.prefix, os.path.dirname(os.__file__), "<frozen", "<string>")
     debugger_files = (pdb.__file__,)
 
-    def __init__(self, func, handler=None):
-        self.func = func
+    def __init__(self, handler=None):
         self.handler = handler or self.print_handler
-        self.frames = []
+        # self.frames = []
         self.count = 0
         self.old_tracer = sys.gettrace()
         self.old_settrace = sys.settrace
-        self.sub_tracer = None
-        self.skipped_frame = None
-        self.run()
+        self.sub_tracer = []
 
     def settrace(self, func):
         # print("settrace called with", func)
@@ -29,37 +26,32 @@ class FrameCounter:
         filename = frame.f_code.co_filename
         return filename.startswith(cls.excluded_prefixes)
 
-    def should_skip_frame(self, frame: types.FrameType, event: str = None) -> bool:
+    def should_skip_frame(self, frame: types.FrameType) -> bool:
         """"Determine if the frame should be skipped due to being part of the debugger."""
-        if self.skipped_frame:
-            if event == "return" and self.skipped_frame.f_back is frame.f_back:
-                self.skipped_frame = None
-            return True
-        if frame.f_code.co_filename in self.debugger_files:
-            self.skipped_frame = frame
-            return True
-        frame_self = frame.f_locals.get("self")
-        return frame_self is self
+        return frame.f_code.co_filename in self.debugger_files or frame.f_code == self.__exit__.__code__
 
-    def my_tracer(self, frame: types.FrameType, event: str, arg: any) -> any:
-        if not self.should_skip_frame(frame, event):
+    def get_tracer(self, sub_tracer, use_global):
+        def tracer(frame: types.FrameType, event: str, arg: any) -> any:
+            if self.should_skip_frame(frame):
+                return None
             if not self.is_standard_library_frame(frame):
                 self.handler(self.count, frame, event, arg)
-                self.frames.append(frame)
+                # self.frames.append(frame)
                 self.count += 1
-            if self.sub_tracer:
-                self.sub_tracer = self.sub_tracer(frame, event, arg)
-        return self.my_tracer
+            actual_tracer = sub_tracer or (use_global and self.sub_tracer)
+            if actual_tracer:
+                return self.get_tracer(actual_tracer(frame, event, arg), use_global=False)
+            return tracer
+        return tracer
 
-    def run(self):
-        sys.settrace(self.my_tracer)
+    def __enter__(self):
+        sys.settrace(self.get_tracer(None, use_global=True))
         sys.settrace = self.settrace
-        try:
-            self.func()
-            assert sys.settrace == self.settrace
-        finally:
-            sys.settrace = self.old_settrace
-            sys.settrace(self.old_tracer)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        sys.settrace = self.old_settrace
+        sys.settrace(self.old_tracer)
 
     @staticmethod
     def print_handler(count: int, frame: types.FrameType, event: str, arg: any):
@@ -71,13 +63,14 @@ class FrameCounter:
 
 def foo():
     print("foo")
+    # random.randint(0, 4)
 
 def test():
     print("start")
     for i in range(10):
         if i == 8:
             print("breakpoint 1")
-            breakpoint()
+            # breakpoint()
         print(i)
         foo()
         print("random", i)
@@ -91,6 +84,15 @@ def handler(count, frame, event, arg):
         print("breakpoint 2")
         breakpoint()
 
-counter = FrameCounter(test, handler)
+# def trace(frame, event, arg):
+#     return trace
+# sys.settrace(trace)
+# test()
+# sys.settrace(None)
 
-print("Number of frames:", len(counter.frames))
+with FrameCounter(handler) as counter:
+    test()
+
+# test()
+
+print("Number of frames:", counter.count)
