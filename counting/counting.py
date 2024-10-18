@@ -3,7 +3,6 @@ import sys
 import random
 import types
 import pdb
-from dataclasses import dataclass
 
 
 class FrameCounter:
@@ -185,7 +184,7 @@ def print_handler(count: int, frame: types.FrameType, event: str, arg: any):
 
 
 def handler(count, frame, event, arg):
-    FrameCounter.print_handler(count, frame, event, arg)
+    print_handler(count, frame, event, arg)
     if count == 23:
         print("breakpoint 2")
         breakpoint()
