@@ -71,12 +71,12 @@ class SnapshotManager:
 
 """
 snapshots contains:
-- instruction count 
+- instruction count
 - variable state
-- standard library functions 
+- standard library functions
 
-global snapshots contains: 
-- highest instruction count 
+global snapshots contains:
+- highest instruction count
 """
 
 if __name__ == "__main__":
