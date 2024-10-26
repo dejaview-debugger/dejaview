@@ -3,24 +3,54 @@ import math
 import random
 import types
 from functools import wraps
+from typing import TypeVar, Type
 
+from patcher import Patcher, GenericPatcher
 from state_store import StateStore
 
 
+reset_funcs = []
+capture_funcs = []
+
+
+def capture():
+    return [func() for func in capture_funcs]
+
+
+def reset(snapshot):
+    assert len(snapshot) == len(reset_funcs)
+    for func, seq in zip(reset_funcs, snapshot):
+        func(seq)
+
+
+TPatcher = TypeVar("TPatcher", bound=Patcher)
+
+
 # Decorator to log function results
-def log_results(func):
+def log_results[TPatcher](func, patcher: Type[TPatcher] = GenericPatcher):
+    # assert issubclass(patcher, Patcher)
+
     current_seq = -1  # first sequence number should be 0
     log_results.mode = True  # Play vs replay
+
+    def reset_seq(seq):
+        nonlocal current_seq
+        current_seq = seq
+
+    capture_funcs.append(lambda: current_seq)
+    reset_funcs.append(reset_seq)
 
     @wraps(func)
     def wrapper(*args, **kwargs):
         nonlocal current_seq
         current_seq += 1
-        if log_results.mode: # TODO: switch to enum
-            result = func(*args, **kwargs) # Execute the function
-            StateStore.get(func).set_state(current_seq, result)
+        # print("Current sequence number:", current_seq, "Function:", func.__name__)
+        if log_results.mode:  # TODO: switch to enum
+            result, state = patcher.play(func, *args, **kwargs)  # Execute the function
+            StateStore.get(func).set_state(current_seq, state)
             return result
-        return StateStore.get(func).get_state(current_seq)
+        state = StateStore.get(func).get_state(current_seq)
+        return patcher.replay(func, state, *args, **kwargs)
 
     return wrapper
 
@@ -34,35 +64,41 @@ def patch_all_functions_in_module(module):
 
 
 # Patches a function
-def patch_func(func):
+def patch_func(func, patcher=GenericPatcher):
     # Method 1
     module = inspect.getmodule(func)
     if module is not None:
-        setattr(inspect.getmodule(func), func.__name__, log_results(func))
+        setattr(inspect.getmodule(func), func.__name__, log_results(func, patcher))
         return
     # Method 2
     try:
-        setattr(globals().get(func.__self__.__module__), "random", log_results(func))
-    except:
+        setattr(
+            globals().get(func.__self__.__module__),
+            "random",
+            log_results(func, patcher),
+        )
+    except:  # noqa: E722
         pass
 
 
 # Example functions to test
+@log_results
 def add(a, b):
     return a + b
 
 
+@log_results
 def multiply(a, b):
     return a * b
 
 
 # Patching all functions in the current module
 if __name__ == "__main__":
-    import sys
-
     patch_func(math.sin)
     patch_func(random.random)
-    patch_all_functions_in_module(sys.modules[__name__])
+    # patch_all_functions_in_module(sys.modules[__name__])
+
+    snapshot = capture()
 
     # Call the functions to see the logging in action
 
@@ -75,11 +111,15 @@ if __name__ == "__main__":
     print(math.sin(0))
 
     # Turn on replay mode
+    reset(snapshot)
     log_results.mode = False
 
-    print(add(0, 0), multiply(0, 0), math.sin(1))  # Should be 8 10 0
+    assert add(0, 0) == 8
+    assert multiply(0, 0) == 10
+    assert math.sin(1) == 0.0
 
     # Turn on loggin mode
+    snapshot = capture()
     log_results.mode = True
 
     val1 = random.random()
@@ -88,13 +128,38 @@ if __name__ == "__main__":
     random.seed(0)  # Reset
     initial = random.random()
 
-    print(val1, val2, "initial", initial)
-
+    reset(snapshot)
     log_results.mode = False
 
     random.seed(0)  # Reset
-    print(random.random(), random.random())  # Identical line as before
+    assert random.random() == val1
+    assert random.random() == val2
+    assert random.random() == initial
 
     log_results.mode = True
 
-    print(random.random())  # should be initial
+    assert random.random() == initial
+
+    # Test custom patcher
+
+    class CustomPatcher(Patcher[int, int]):
+        @staticmethod
+        def play(func, *args, **kwargs):
+            return func(*args, **kwargs) + 1, 1
+
+        @staticmethod
+        def replay(func, state, *args, **kwargs):
+            return state + 2
+
+    patch_func(random.randint, CustomPatcher)
+
+    snapshot = capture()
+    log_results.mode = True
+
+    rand_val = random.randint(5, 5)
+    assert rand_val == 6
+
+    reset(snapshot)
+    log_results.mode = False
+
+    assert random.randint(5, 5) == 3

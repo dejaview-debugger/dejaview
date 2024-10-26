@@ -8,7 +8,7 @@ TState = TypeVar("TState")
 TReturn = TypeVar("TReturn")
 
 
-class Patcher(Protocol[TState, TReturn]):
+class Patcher(Protocol[TReturn, TState]):
     @staticmethod
     def play(func, *args, **kwargs) -> Tuple[TReturn, TState]: ...
 
@@ -16,7 +16,7 @@ class Patcher(Protocol[TState, TReturn]):
     def replay(func, state: TState, *args, **kwargs) -> TReturn: ...
 
 
-class GenericPatcher(Patcher[TState, TReturn]):
+class GenericPatcher(Patcher[TReturn, TState]):
     def __init__(self, func):
         self.func = func
 
