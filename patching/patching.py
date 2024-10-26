@@ -1,94 +1,95 @@
 import inspect
 import logging
 import types
+import random
 from functools import wraps
-from collections import deque, defaultdict
 
 import math
 
-'''
-examples of function patching
-'''
-
-@patch
-def my_func():
-    pass
-
-patch(random.randint)
-
-from typing import Protocol, Tuple, TypeVar, Generic
-
-TState = TypeVar('TState')
-TReturn = TypeVar('TReturn')
-
-class Patcher(Protocol):
-    @staticmethod
-    def play(func, *args, **kwargs) -> Tuple[TReturn, TState]:
-        ...
-
-    @staticmethod
-    def replay(func, state: TState, *args, **kwargs) -> TReturn:
-        ...
-
-class GenericPatcher(Protocol[TState, TReturn]):
-    def __init__(self, func):
-        self.func = func
-
-    @staticmethod
-    def play(func, *args, **kwargs):
-        ret = func(*args, **kwargs)
-        return ret, ret
-
-    @staticmethod
-    def replay(func, state, *args, **kwargs):
-        return state
-
-@patch(patcher=MyPatcher)
-def my_func():
-    pass
-
-# example use case: patch just open() function instead of all functions on the File
+from collections import defaultdict
 
 # Decorator to log function results
 def log_results(func):
-    stored_results = {}
+    log_results.stored_res = defaultdict(list)
+    log_results.current_seq = defaultdict(int) # func to int
+    log_results.mode = True # Play vs replay
     @wraps(func)
     def wrapper(*args, **kwargs):
-        result = func(*args, **kwargs)  # Execute the function
-        # Add to a listfaul ofc results
-        print("logged", restult)
-        stored_results[func].append(result)
-    log_results.storreturn result  # Retdiut(deque)rn the actual result to avoid changing behavior
+        if log_results.mode:
+            result = func(*args, **kwargs)  # Execute the function
+            log_results.stored_res[func].append(result)
+            return result
+        # Assume we magically have seq number
+        seq_num = log_results.current_seq[func]
+        log_results.current_seq[func] += 1
+        return log_results.stored_res[func][seq_num]
     return wrapper
 
 # Function to apply logging to all functions in a module
-def patch_all_functions_in_module(
-        log_results.obj = getattr(module, name)
+def patch_all_functions_in_module(module):
+    for name in dir(module):
+        obj = getattr(module, name)
         if isinstance(obj, types.FunctionType) and name != 'log_results':
             setattr(module, name, log_results(obj))  # Decorate only real functions
 
 # Patches a function
 def patch_func(func):
-    setattr(inspect.getmodule(func), func.__name__, log_results(func))
+    # Method 1
+    module = inspect.getmodule(func)
+    if module is not None:
+        setattr(inspect.getmodule(func), func.__name__, log_results(func))
+        return
+    # Method 2
+    try:
+        setattr(globals().get(func.__self__.__module__), "random", log_results(func))
+    except:
+        pass
 
 # Example functions to test
-@log_results
 def add(a, b):
     return a + b
 
-# @log_results
 def multiply(a, b):
     return a * b
 
 # Patching all functions in the current module
 if __name__ == "__main__":
     import sys
-    #math.sin = log_results(math.sin)
     patch_func(math.sin)
-    # patch_all_functions_in_module(sys.modules[__name__])
+    patch_func(random.random)
+    patch_all_functions_in_module(sys.modules[__name__])
 
     # Call the functions to see the logging in action
+
+    # Turn on logging mode
+    log_results.mode = True
+
     result_add = add(5, 3)
     result_multiply = multiply(2, 5)
 
     print(math.sin(0))
+
+    # Turn on replay mode
+    log_results.mode = False
+
+    print(add(0, 0), multiply(0, 0), math.sin(1)) # Should be 8 10 0
+
+    # Turn on loggin mode
+    log_results.mode = True
+
+    val1 = random.random()
+    val2 = random.random()
+
+    random.seed(0) # Reset
+    initial = random.random()
+
+    print(val1, val2, "initial", initial)
+
+    log_results.mode = False
+
+    random.seed(0) # Reset
+    print(random.random(), random.random()) # Identical line as before
+
+    log_results.mode = True
+
+    print(random.random()) # should be initial
