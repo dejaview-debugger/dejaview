@@ -4,9 +4,10 @@ import random
 import types
 from functools import wraps
 from typing import TypeVar, Type
+from enum import Enum
 
-from patcher import Patcher, GenericPatcher
-from state_store import StateStore
+from .patcher import Patcher, GenericPatcher
+from .state_store import StateStore
 
 
 reset_funcs = []
@@ -23,15 +24,32 @@ def reset(snapshot):
         func(seq)
 
 
+skip_count = 0
+
+
+def skip_patching():
+    global skip_count
+    skip_count += 1
+    print("skip", skip_count)
+
+def restore_patching():
+    global skip_count
+    skip_count -= 1
+    assert skip_count >= 0
+    print("restore", skip_count)
+
+def is_skip_patching():
+    return skip_count > 0
+
+
 TPatcher = TypeVar("TPatcher", bound=Patcher)
 
 
 # Decorator to log function results
-def log_results[TPatcher](func, patcher: Type[TPatcher] = GenericPatcher):
+def log_results(func, patcher: Type[TPatcher] = GenericPatcher):
     # assert issubclass(patcher, Patcher)
 
     current_seq = -1  # first sequence number should be 0
-    log_results.mode = True  # Play vs replay
 
     def reset_seq(seq):
         nonlocal current_seq
@@ -42,16 +60,22 @@ def log_results[TPatcher](func, patcher: Type[TPatcher] = GenericPatcher):
 
     @wraps(func)
     def wrapper(*args, **kwargs):
+        if is_skip_patching():
+            return func(*args, **kwargs)
+        
         nonlocal current_seq
         current_seq += 1
-        # print("Current sequence number:", current_seq, "Function:", func.__name__)
-        if log_results.mode:  # TODO: switch to enum
+        # print("Current sequence number:", current_seq, "Function:", func.__name__, "contains:", StateStore.get(func).contains(current_seq))
+        if not StateStore.get(func).contains(current_seq):
+            # play
             result, state = patcher.play(func, *args, **kwargs)  # Execute the function
             StateStore.get(func).set_state(current_seq, state)
             return result
-        state = StateStore.get(func).get_state(current_seq)
-        return patcher.replay(func, state, *args, **kwargs)
-
+        else:
+            # replay
+            state = StateStore.get(func).get_state(current_seq)
+            return patcher.replay(func, state, *args, **kwargs)
+    
     return wrapper
 
 

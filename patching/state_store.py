@@ -4,12 +4,12 @@ from collections import defaultdict
 TState = TypeVar("TState")
 
 
-class FunctionStateStore[TState]:
+class FunctionStateStore:
     def __init__(self):
         self.store = []
 
     def get_state(self, sequence_number: int) -> TState:
-        assert 0 <= sequence_number < len(self.store)
+        assert self.contains(sequence_number)
         return self.store[sequence_number]
 
     def set_state(self, sequence_number: int, state: TState):
@@ -19,6 +19,9 @@ class FunctionStateStore[TState]:
     def clear_later_states(self, sequence_number: int):
         assert 0 <= sequence_number <= len(self.store)
         self.store = self.store[:sequence_number]
+    
+    def contains(self, sequence_number: int):
+        return 0 <= sequence_number < len(self.store)
 
 
 class StateStore:
@@ -26,7 +29,7 @@ class StateStore:
 
     @classmethod
     def get(cls, func) -> FunctionStateStore:
-        return cls.store[func]
+        return cls.store[func.__qualname__]
 
     @classmethod
     def serialize(cls):
