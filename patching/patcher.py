@@ -17,9 +17,6 @@ class Patcher(Protocol[TReturn, TState]):
 
 
 class GenericPatcher(Patcher[TReturn, TState]):
-    def __init__(self, func):
-        self.func = func
-
     @staticmethod
     def play(func, *args, **kwargs):
         ret = func(*args, **kwargs)

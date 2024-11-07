@@ -5,6 +5,7 @@ import types
 from functools import wraps
 from typing import TypeVar, Type
 from enum import Enum
+import typing
 
 from .patcher import Patcher, GenericPatcher
 from .state_store import StateStore
@@ -24,22 +25,31 @@ def reset(snapshot):
         func(seq)
 
 
-skip_count = 0
+class PatchingMode(Enum):
+    NORMAL = 0
+    OFF = 1
+    MUTED = 2
 
 
-class SkipPatching:
+patching_mode = PatchingMode.NORMAL
+
+
+def get_patching_mode():
+    return patching_mode
+
+
+class SetPatchingMode:
+    def __init__(self, mode: PatchingMode):
+        self.mode = mode
+
     def __enter__(self):
-        global skip_count
-        skip_count += 1
+        global patching_mode
+        self.old = patching_mode
+        patching_mode = self.mode
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        global skip_count
-        skip_count -= 1
-        assert skip_count >= 0
-
-
-def is_skip_patching():
-    return skip_count > 0
+        global patching_mode
+        patching_mode = self.old
 
 
 TPatcher = TypeVar("TPatcher", bound=Patcher)
@@ -60,7 +70,7 @@ def log_results(func, patcher: Type[TPatcher] = GenericPatcher):
 
     @wraps(func)
     def wrapper(*args, **kwargs):
-        if is_skip_patching():
+        if get_patching_mode() == PatchingMode.OFF:
             return func(*args, **kwargs)
 
         nonlocal current_seq
@@ -87,37 +97,37 @@ def patch_all_functions_in_module(module):
             setattr(module, name, log_results(obj))  # Decorate only real functions
 
 
-# Patches a function
-def patch_func(func, patcher=GenericPatcher):
+# Decorates a function
+def decorate_func(func, decorator: typing.Callable):
     # Method 1
     module = inspect.getmodule(func)
     if module is not None:
-        setattr(inspect.getmodule(func), func.__name__, log_results(func, patcher))
+        setattr(inspect.getmodule(func), func.__name__, decorator(func))
         return
     # Method 2
-    try:
-        setattr(
-            globals().get(func.__self__.__module__),
-            "random",
-            log_results(func, patcher),
-        )
-    except:  # noqa: E722
-        pass
+    setattr(
+        globals().get(func.__self__.__module__),
+        "random",
+        decorator(func),
+    )
 
 
-# Example functions to test
-@log_results
-def add(a, b):
-    return a + b
-
-
-@log_results
-def multiply(a, b):
-    return a * b
+# Patches a function
+def patch_func(func, patcher: Patcher = GenericPatcher):
+    decorate_func(func, lambda f: log_results(f, patcher))
 
 
 # Patching all functions in the current module
 if __name__ == "__main__":
+    # Example functions to test
+    @log_results
+    def add(a, b):
+        return a + b
+
+    @log_results
+    def multiply(a, b):
+        return a * b
+
     patch_func(math.sin)
     patch_func(random.random)
     # patch_all_functions_in_module(sys.modules[__name__])

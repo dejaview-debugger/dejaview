@@ -19,7 +19,7 @@ class FunctionStateStore:
     def clear_later_states(self, sequence_number: int):
         assert 0 <= sequence_number <= len(self.store)
         self.store = self.store[:sequence_number]
-    
+
     def contains(self, sequence_number: int):
         return 0 <= sequence_number < len(self.store)
 
