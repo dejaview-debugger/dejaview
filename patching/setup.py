@@ -20,7 +20,7 @@ def setup_patching():
     patch_func(time.sleep)
     patch_func(random.SystemRandom.getrandbits)
     patch_func(random.random)
-    patch_func(input)  # BUG we don't want to patch PDB's input()!!
-    decorate_func(print, mute_decorator)
+    patch_func(input)
+    decorate_func(print, mute_decorator)  # mute print when stepping back
 
     # TODO: revert to original
