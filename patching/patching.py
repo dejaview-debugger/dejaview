@@ -27,16 +27,16 @@ def reset(snapshot):
 skip_count = 0
 
 
-def skip_patching():
-    global skip_count
-    skip_count += 1
-    print("skip", skip_count)
+class SkipPatching:
+    def __enter__(self):
+        global skip_count
+        skip_count += 1
 
-def restore_patching():
-    global skip_count
-    skip_count -= 1
-    assert skip_count >= 0
-    print("restore", skip_count)
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        global skip_count
+        skip_count -= 1
+        assert skip_count >= 0
+
 
 def is_skip_patching():
     return skip_count > 0
@@ -62,7 +62,7 @@ def log_results(func, patcher: Type[TPatcher] = GenericPatcher):
     def wrapper(*args, **kwargs):
         if is_skip_patching():
             return func(*args, **kwargs)
-        
+
         nonlocal current_seq
         current_seq += 1
         # print("Current sequence number:", current_seq, "Function:", func.__name__, "contains:", StateStore.get(func).contains(current_seq))
@@ -75,7 +75,7 @@ def log_results(func, patcher: Type[TPatcher] = GenericPatcher):
             # replay
             state = StateStore.get(func).get_state(current_seq)
             return patcher.replay(func, state, *args, **kwargs)
-    
+
     return wrapper
 
 

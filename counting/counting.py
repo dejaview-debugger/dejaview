@@ -17,10 +17,12 @@ class State:
     to_count: int
     function_states: Any  # should be equivalent to get_type_hints(StateStore.serialize()).get('return')
 
+
 class FrameCounter:
     excluded_prefixes = (
         sys.prefix,
         os.path.dirname(os.__file__),
+        patching.__file__,
         "<frozen",
         "<string>",
     )
@@ -36,6 +38,8 @@ class FrameCounter:
         self.own_function_codes = (
             self.settrace.__code__,
             self.breakpointhook.__code__,
+            self.__enter__.__code__,
+            self.__exit__.__code__,
         )
         self.skipped_frames = []
         self.pdb = None
@@ -70,25 +74,16 @@ class FrameCounter:
         def tracer(frame: types.FrameType, event: str, arg: any) -> any:
             # Skip frames that should be skipped
             while self.skipped_frames:
+                # Is the current frame called by the last skipped frame?
                 if frame.f_back == self.skipped_frames[-1]:
-                    if patching.is_skip_patching() or self.should_skip_patch_in_frame_recursively(frame):
-                        print_handler(self.count, frame, event, arg)
-                        patching.skip_patching()
                     self.skipped_frames.append(frame)
                     return None  # Returning None makes us skip the current function but not calls made from it
-                if patching.is_skip_patching():
-                    print_handler(self.count, frame, event, arg)
-                    patching.restore_patching()
+                # Otherwise we're done with the last skipped frame so pop it
                 self.skipped_frames.pop()
 
             if self.should_skip_frame_recursively(frame):
-                if self.should_skip_patch_in_frame_recursively(frame):
-                    print_handler(self.count, frame, event, arg)
-                    patching.skip_patching()
                 self.skipped_frames.append(frame)
                 return None
-            
-            assert not patching.is_skip_patching()
 
             try:
                 # Call the user-defined handlers, remove the ones that return True
@@ -100,7 +95,9 @@ class FrameCounter:
                 actual_sub_tracer = self.sub_tracer or sub_tracer
                 self.sub_tracer = None
                 if actual_sub_tracer:
-                    new_tracer = actual_sub_tracer(frame, event, arg)
+                    # Disable patching while calling the sub-tracer to not interfere with the debugger
+                    with patching.SkipPatching():
+                        new_tracer = actual_sub_tracer(frame, event, arg)
                     if new_tracer != sub_tracer:
                         return self.get_tracer(new_tracer)
                 return tracer
@@ -118,24 +115,26 @@ class FrameCounter:
         self.old_settrace = sys.settrace
         self.old_breakpointhook = sys.breakpointhook
         sys.settrace = self.settrace
-        self.setup()
 
         # capture snapshot
         state: State = self.snapshot_manager.capture_snapshot()
-        if state != None:
+        if state is not None:
             # add handler to enter debugger at to_count
             def handler(count, frame, event, arg):
                 if count == state.to_count:
                     self.allow_breakpoints = True
-                    print("enter breakpoint after stepping back to count", count)
-                    self.get_pdb().set_trace(frame)
+                    # print("enter breakpoint after stepping back to count", count)
+                    self.breakpoint(frame)
                     return True
                 return False
+
             self.allow_breakpoints = False
             self.add_handler(handler)
 
             # set function state stores
             StateStore.deserialize(state.function_states)
+
+        self.setup()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         # Restore the original tracer and settrace
@@ -157,9 +156,13 @@ class FrameCounter:
             self.pdb = self.CustomPdb(self)
         return self.pdb
 
+    def breakpoint(self, frame):
+        assert self.allow_breakpoints
+        self.get_pdb().set_trace(frame)
+
     def breakpointhook(self, *args, **kws):
         if self.allow_breakpoints:
-            self.get_pdb().set_trace(sys._getframe().f_back)
+            self.breakpoint(sys._getframe().f_back)
 
     class CustomPdb(pdb.Pdb):
         def __init__(self, counter):
@@ -213,14 +216,24 @@ def print_handler(count: int, frame: types.FrameType, event: str, arg: any):
 
 
 def test_input():
-    import time
-
     print("start")
-    # s = input("input something: ")
-    s = time.time()
+    s = input("input something: ")
     print("input:", s)
     breakpoint()
     print("input:", s)
+    print("finish")
+
+
+def test_time():
+    import time
+
+    print("start")
+    s = time.time()
+    print("time:", s)
+    breakpoint()
+    print("time:", s)
+    elapsed = time.time() - s
+    print("elapsed time:", elapsed)
     print("finish")
 
 
