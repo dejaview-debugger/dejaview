@@ -199,11 +199,13 @@ export class PythonDebugAdapter extends LoggingDebugSession {
   }
 
   protected stepBackRequest(
-    response: DebugProtocol.StepOutResponse,
-    args: DebugProtocol.StepOutArguments
+    response: DebugProtocol.StepBackResponse,
+    args: DebugProtocol.StepBackArguments,
   ): void {
     if (this.process) {
+      this.is_running = true;
       this.process?.stdin?.write("back\n");
+      this.sendEvent(new ContinuedEvent(1)); // Notify that the program has resumed
     }
     this.sendResponse(response);
   }

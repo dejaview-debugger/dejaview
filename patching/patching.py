@@ -6,6 +6,7 @@ from functools import wraps
 from typing import TypeVar, Type
 from enum import Enum
 import typing
+from unittest.mock import patch
 
 from .patcher import Patcher, GenericPatcher
 from .state_store import StateStore
@@ -78,9 +79,9 @@ def log_results(func, patcher: Type[TPatcher] = GenericPatcher):
         # print("Current sequence number:", current_seq, "Function:", func.__name__, "contains:", StateStore.get(func).contains(current_seq))
         if not StateStore.get(func).contains(current_seq):
             # play
-            result, state = patcher.play(func, *args, **kwargs)  # Execute the function
+            run, state = patcher.play(func, *args, **kwargs)  # Execute the function
             StateStore.get(func).set_state(current_seq, state)
-            return result
+            return run()
         else:
             # replay
             state = StateStore.get(func).get_state(current_seq)
@@ -105,16 +106,26 @@ def decorate_func(func, decorator: typing.Callable):
         setattr(inspect.getmodule(func), func.__name__, decorator(func))
         return
     # Method 2
-    setattr(
-        globals().get(func.__self__.__module__),
-        "random",
-        decorator(func),
-    )
+    if hasattr(func, "__self__"):
+        setattr(
+            globals().get(func.__self__.__module__),
+            "random",
+            decorator(func),
+        )
+        return
+    # Method 3
+    setattr(func.__objclass__, func.__name__, decorator(func))
 
 
 # Patches a function
 def patch_func(func, patcher: Patcher = GenericPatcher):
     decorate_func(func, lambda f: log_results(f, patcher))
+
+
+def patch_mock(object, attribute, patcher: Patcher = GenericPatcher):
+    original = getattr(object, attribute)
+    mock_bind = log_results(original, patcher)
+    patch.object(object, attribute, mock_bind).__enter__()
 
 
 # Patching all functions in the current module
