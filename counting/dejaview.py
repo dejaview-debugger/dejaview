@@ -20,10 +20,12 @@ class DejaView:
         self.counter = FrameCounter()
         self.snapshot_manager = SnapshotManager()
         self.counter.pdb_factory = lambda: self.CustomPdb(self)
+        # self.counter.add_handler(print_handler)
 
     def rerun_to(self, to_count: int):
         state = State(to_count, StateStore.serialize())
-        raise self.snapshot_manager.resume_snapshot(state)
+        self.snapshot_manager.resume_snapshot(state)
+        exit(0)
 
     def __enter__(self):
         self.counter.backup()
@@ -43,7 +45,7 @@ class DejaView:
                         event = yield
                         if event.count == state.to_count:
                             self.counter.allow_breakpoints = True
-                            # print("enter breakpoint after stepping back to count", count)
+                            # print("enter breakpoint after stepping back to count", state.to_count)
                             self.counter.breakpoint(event.frame)
                             break
 

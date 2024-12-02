@@ -113,7 +113,8 @@ class FrameCounter:
                 # Exit the program
                 exit(1)
             finally:
-                self.count += 1
+                if event == "line":
+                    self.count += 1
 
         return tracer
 
