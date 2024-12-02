@@ -89,7 +89,7 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     /// this.sendEvent(new OutputEvent(`Launching program: ${args.program}\n`));
     // Start a subprocess for pdb (ensure args.program is the script)
     const { spawn } = require("child_process");
-    const process = spawn("python", ["-m", "pdb", args.program]);
+    const process = spawn("python3", ["-m", "pdb", args.program]);
 
     if (process !== null) {
       process.stdout.on("data", (data: Buffer) => {
@@ -294,17 +294,18 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     const stackFrames: DebugProtocol.StackFrame[] = [];
     const lines = output.split("\n");
 
-    lines.forEach((line, index) => {
-      const match = line.match(/(.*)\((\d+)\)(.*)/);
+    /// this.sendEvent(new OutputEvent(`DEBUG???: get stack\n`));
+
+    lines.reverse().forEach((line, index) => {
+      const match = line.match(/^>?\s+(.*)\((\d+)\)(.*)$/);
       if (match) {
         let [, file, lineNumber, functionName] = match;
-        file = file.substring(2, file.length);
         // Blacklist pdb, bdb
         if (file.includes("pdb") || file.includes("bdb")) {
           return;
         }
-        // Blacklist functions with '<' and '>'
-        if (functionName.includes("<") || functionName.includes(">")) {
+        // Blacklist files with '<' and '>'
+        if (file.includes("<") || file.includes(">")) {
           return;
         }
         functionName = functionName.substring(0, functionName.length - 2);
