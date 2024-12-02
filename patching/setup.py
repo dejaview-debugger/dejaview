@@ -6,7 +6,7 @@ import builtins
 
 from .patching import (
     decorate_func,
-    patch_mock,
+    Patches,
     get_patching_mode,
     PatchingMode,
 )
@@ -23,15 +23,17 @@ def mute_decorator(func):
 
 
 def setup_patching():
-    patch_mock(time, "time")
-    patch_mock(time, "sleep")
-    patch_mock(random.SystemRandom, "getrandbits")
-    patch_mock(random, "random")
-    patch_mock(socket.socket, "bind")
-    patch_mock(socket.socket, "recvfrom")
-    patch_mock(socket.socket, "sendto")
-    patch_mock(socket, "socket")
-    patch_mock(builtins, "input")
-    decorate_func(print, mute_decorator)  # mute print when stepping back
+    p = Patches()
+    p.patch(time, "time")
+    p.patch(time, "sleep")
+    p.patch(random.SystemRandom, "getrandbits")
+    p.patch(random, "random")
+    p.patch(socket.socket, "bind")
+    p.patch(socket.socket, "recvfrom")
+    p.patch(socket.socket, "sendto")
+    p.patch(socket, "socket")
+    p.patch(builtins, "input")
+    p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
+    return p
 
     # TODO: revert to original

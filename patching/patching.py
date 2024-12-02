@@ -122,10 +122,27 @@ def patch_func(func, patcher: Patcher = GenericPatcher):
     decorate_func(func, lambda f: log_results(f, patcher))
 
 
-def patch_mock(object, attribute, patcher: Patcher = GenericPatcher):
-    original = getattr(object, attribute)
-    mock_bind = log_results(original, patcher)
-    patch.object(object, attribute, mock_bind).__enter__()
+class Patches:
+    def __init__(self):
+        self.mocks = []
+
+    def decorate(self, object, attribute, decorator: typing.Callable):
+        original = getattr(object, attribute)
+        mock_bind = decorator(original)
+        mock = patch.object(object, attribute, mock_bind)
+        mock.__enter__()
+        self.mocks.append(mock)
+
+    def patch(self, object, attribute, patcher: Patcher = GenericPatcher):
+        self.decorate(object, attribute, lambda f: log_results(f, patcher))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        while self.mocks:
+            self.mocks[-1].__exit__(exc_type, exc_val, exc_tb)
+            self.mocks.pop()
 
 
 # Patching all functions in the current module

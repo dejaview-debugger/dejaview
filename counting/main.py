@@ -8,6 +8,7 @@ import bdb
 
 from .dejaview import DejaView
 
+
 class CustomPdb(DejaView.CustomPdb):
     def run(self, cmd, globals=None, locals=None):
         """Debug a statement executed via the exec() function.
@@ -16,6 +17,7 @@ class CustomPdb(DejaView.CustomPdb):
         """
         if globals is None:
             import __main__
+
             globals = __main__.__dict__
         if locals is None:
             locals = globals
@@ -32,8 +34,9 @@ class CustomPdb(DejaView.CustomPdb):
                 self.quitting = True
                 sys.settrace(None)
 
+
 def main():
-    opts, args = getopt.getopt(sys.argv[1:], 'mhc:', ['help', 'command='])
+    opts, args = getopt.getopt(sys.argv[1:], "mhc:", ["help", "command="])
 
     if not args:
         print(pdb._usage)
@@ -42,28 +45,29 @@ def main():
     commands = []
     run_as_module = False
     for opt, optarg in opts:
-        if opt in ['-h', '--help']:
+        if opt in ["-h", "--help"]:
             print(pdb._usage)
             sys.exit()
-        elif opt in ['-c', '--command']:
+        elif opt in ["-c", "--command"]:
             commands.append(optarg)
-        elif opt in ['-m']:
+        elif opt in ["-m"]:
             run_as_module = True
 
-    mainpyfile = args[0]     # Get script filename
+    mainpyfile = args[0]  # Get script filename
     if not run_as_module and not os.path.exists(mainpyfile):
-        print('Error:', mainpyfile, 'does not exist')
+        print("Error:", mainpyfile, "does not exist")
         sys.exit(1)
 
     if run_as_module:
         import runpy
+
         try:
             runpy._get_module_details(mainpyfile)
         except Exception:
             traceback.print_exc()
             sys.exit(1)
 
-    sys.argv[:] = args      # Hide "pdb.py" and pdb options from argument list
+    sys.argv[:] = args  # Hide "pdb.py" and pdb options from argument list
 
     if not run_as_module:
         mainpyfile = os.path.realpath(mainpyfile)
@@ -87,13 +91,12 @@ def main():
             if my_pdb._user_requested_quit:
                 break
             print("The program finished and will be restarted")
-            break  # our patcher doesn't support restarting
         except pdb.Restart:
             print("Restarting", mainpyfile, "with arguments:")
             print("\t" + " ".join(sys.argv[1:]))
         except SystemExit:
             # In most cases SystemExit does not warrant a post-mortem session.
-            print("The program exited via sys.exit(). Exit status:", end=' ')
+            print("The program exited via sys.exit(). Exit status:", end=" ")
             print(sys.exc_info()[1])
         except SyntaxError:
             traceback.print_exc()
@@ -104,5 +107,8 @@ def main():
             print("Running 'cont' or 'step' will restart the program")
             t = sys.exc_info()[2]
             my_pdb.interaction(None, t)
-            print("Post mortem debugger finished. The " + mainpyfile +
-                " will be restarted")
+            print(
+                "Post mortem debugger finished. The "
+                + mainpyfile
+                + " will be restarted"
+            )

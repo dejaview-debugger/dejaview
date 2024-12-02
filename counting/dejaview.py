@@ -31,7 +31,7 @@ class DejaView:
         self.counter.backup()
         self.setup_snapshot()
         self.counter.start()
-        setup_patching()
+        self.patches = setup_patching()
         return self
 
     def setup_snapshot(self):
@@ -56,6 +56,7 @@ class DejaView:
             StateStore.deserialize(state.function_states)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self.patches.__exit__(exc_type, exc_val, exc_tb)
         self.counter.__exit__(exc_type, exc_val, exc_tb)
 
     def get_pdb(self):
