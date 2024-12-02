@@ -47,9 +47,20 @@ def test_time():
     print("finish")
 
 
+def test_call():
+    def foo():
+        print(1)
+        print(2)
+    print(3)
+    breakpoint()
+    print(4)
+    foo()
+    print(5)
+
+
 dejaview = DejaView()
 # dejaview.counter.add_handler(print_handler)
 with dejaview:
-    test_input()
+    test_call()
 
 print("Number of frames:", dejaview.counter.count)

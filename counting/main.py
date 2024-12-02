@@ -1,0 +1,108 @@
+import getopt
+import sys
+import pdb
+import os
+import traceback
+import sys
+import bdb
+
+from .dejaview import DejaView
+
+class CustomPdb(DejaView.CustomPdb):
+    def run(self, cmd, globals=None, locals=None):
+        """Debug a statement executed via the exec() function.
+
+        globals defaults to __main__.dict; locals defaults to globals.
+        """
+        if globals is None:
+            import __main__
+            globals = __main__.__dict__
+        if locals is None:
+            locals = globals
+        self.reset()
+        if isinstance(cmd, str):
+            cmd = compile(cmd, "<string>", "exec")
+        with self.dejaview:
+            sys.settrace(self.trace_dispatch)
+            try:
+                exec(cmd, globals, locals)
+            except bdb.BdbQuit:
+                pass
+            finally:
+                self.quitting = True
+                sys.settrace(None)
+
+def main():
+    opts, args = getopt.getopt(sys.argv[1:], 'mhc:', ['help', 'command='])
+
+    if not args:
+        print(pdb._usage)
+        sys.exit(2)
+
+    commands = []
+    run_as_module = False
+    for opt, optarg in opts:
+        if opt in ['-h', '--help']:
+            print(pdb._usage)
+            sys.exit()
+        elif opt in ['-c', '--command']:
+            commands.append(optarg)
+        elif opt in ['-m']:
+            run_as_module = True
+
+    mainpyfile = args[0]     # Get script filename
+    if not run_as_module and not os.path.exists(mainpyfile):
+        print('Error:', mainpyfile, 'does not exist')
+        sys.exit(1)
+
+    if run_as_module:
+        import runpy
+        try:
+            runpy._get_module_details(mainpyfile)
+        except Exception:
+            traceback.print_exc()
+            sys.exit(1)
+
+    sys.argv[:] = args      # Hide "pdb.py" and pdb options from argument list
+
+    if not run_as_module:
+        mainpyfile = os.path.realpath(mainpyfile)
+        # Replace pdb's dir with script's dir in front of module search path.
+        sys.path[0] = os.path.dirname(mainpyfile)
+
+    # Note on saving/restoring sys.argv: it's a good idea when sys.argv was
+    # modified by the script being debugged. It's a bad idea when it was
+    # changed by the user from the command line. There is a "restart" command
+    # which allows explicit specification of command line arguments.
+    dejaview = DejaView()
+    dejaview.counter.pdb_factory = lambda: CustomPdb(dejaview)
+    my_pdb = dejaview.get_pdb()
+    my_pdb.rcLines.extend(commands)
+    while True:
+        try:
+            if run_as_module:
+                my_pdb._runmodule(mainpyfile)
+            else:
+                my_pdb._runscript(mainpyfile)
+            if my_pdb._user_requested_quit:
+                break
+            print("The program finished and will be restarted")
+            break  # our patcher doesn't support restarting
+        except pdb.Restart:
+            print("Restarting", mainpyfile, "with arguments:")
+            print("\t" + " ".join(sys.argv[1:]))
+        except SystemExit:
+            # In most cases SystemExit does not warrant a post-mortem session.
+            print("The program exited via sys.exit(). Exit status:", end=' ')
+            print(sys.exc_info()[1])
+        except SyntaxError:
+            traceback.print_exc()
+            sys.exit(1)
+        except:
+            traceback.print_exc()
+            print("Uncaught exception. Entering post mortem debugging")
+            print("Running 'cont' or 'step' will restart the program")
+            t = sys.exc_info()[2]
+            my_pdb.interaction(None, t)
+            print("Post mortem debugger finished. The " + mainpyfile +
+                " will be restarted")

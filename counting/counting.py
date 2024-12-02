@@ -24,7 +24,7 @@ class FrameCounter:
             os.path.dirname(os.__file__),
             os.path.dirname(patching.__file__),
             "<frozen",
-            "<string>",
+            # "<string>",
         )
         self.debugger_files = (pdb.__file__, bdb.__file__)
         self.own_function_codes = {
@@ -100,12 +100,13 @@ class FrameCounter:
 
                 # Call the sub-tracer if it exists
                 actual_sub_tracer = self.sub_tracer or sub_tracer
-                self.sub_tracer = None
+                # self.sub_tracer = None
                 if actual_sub_tracer:
                     # Disable patching while calling the sub-tracer to not interfere with the debugger
                     with patching.SetPatchingMode(patching.PatchingMode.OFF):
                         new_tracer = actual_sub_tracer(frame, event, arg)
                     if new_tracer != sub_tracer:
+                        self.sub_tracer = new_tracer
                         return self.get_tracer(new_tracer)
                 return tracer
             except bdb.BdbQuit:
@@ -119,6 +120,7 @@ class FrameCounter:
     def __enter__(self):
         self.backup()
         self.start()
+        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         # Restore the original tracer and settrace

@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from typing import Any
-import typing
 
 from .counting import FrameCounter, Event
 from ..snapshots import SnapshotManager
@@ -31,11 +30,12 @@ class DejaView:
         self.setup_snapshot()
         self.counter.start()
         setup_patching()
+        return self
 
     def setup_snapshot(self):
         # capture snapshot
         state: State = self.snapshot_manager.capture_snapshot()
-        if state is not None:
+        if state is not None:  # if we're resuming from a snapshot
             # add handler to enter debugger at to_count
             def handler():
                 with patching.SetPatchingMode(patching.PatchingMode.MUTED):
@@ -55,6 +55,9 @@ class DejaView:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.counter.__exit__(exc_type, exc_val, exc_tb)
+
+    def get_pdb(self):
+        return self.counter.get_pdb()
 
     class CustomPdb(FrameCounter.CustomPdb):
         def __init__(self, dejaview: "DejaView"):
@@ -76,6 +79,9 @@ class DejaView:
                 return
             self.quitting = True
             self.dejaview.rerun_to(count)
+
+        def stop_here(self, frame):
+            return self.counter.allow_breakpoints and super().stop_here(frame)
 
 
 def print_handler(event: Event):
