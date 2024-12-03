@@ -1,8 +1,6 @@
 import os
 import random
 import multiprocessing
-import time
-from typing import TypeVar
 
 # Test program for debug
 

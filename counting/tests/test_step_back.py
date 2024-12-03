@@ -59,9 +59,26 @@ def test_call():
     print(5)
 
 
+def test_exception():
+    def foo(n):
+        print(n, "start")
+        if n == 0:
+            raise ValueError("n is 0")
+        foo(n - 1)
+        print(n, "end")
+
+    try:
+        print(1)
+        foo(3)
+        print(2)
+    except ValueError as e:
+        print("caught exception:", e)
+    print(3)
+
+
 dejaview = DejaView()
-# dejaview.counter.add_handler(print_handler)
+dejaview.counter.add_handler(print_handler)
 with dejaview:
-    test_time()
+    test_call()
 
 print("Number of frames:", dejaview.counter.count)

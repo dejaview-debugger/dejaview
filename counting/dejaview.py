@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, List
 
 from .counting import FrameCounter, Event
 from ..snapshots import SnapshotManager
@@ -10,7 +10,7 @@ from ..patching.setup import setup_patching
 
 @dataclass
 class State:
-    to_count: int
+    to_counts: List[int]
     function_states: Any  # should be equivalent to get_type_hints(StateStore.serialize()).get('return')
     # TODO: add debugger state
 
@@ -22,10 +22,14 @@ class DejaView:
         self.counter.pdb_factory = lambda: self.CustomPdb(self)
         # self.counter.add_handler(print_handler)
 
-    def rerun_to(self, to_count: int):
-        state = State(to_count, StateStore.serialize())
+    def step_back(self):
+        counts = [frame.count for frame in self.counter.stack]
+        if counts[-1] == 0:
+            counts.pop()
+        else:
+            counts[-1] -= 1
+        state = State(counts, StateStore.serialize())
         self.snapshot_manager.resume_snapshot(state)
-        exit(0)
 
     def __enter__(self):
         self.counter.backup()
@@ -43,7 +47,9 @@ class DejaView:
                 with patching.SetPatchingMode(patching.PatchingMode.MUTED):
                     while True:
                         event = yield
-                        if event.count == state.to_count:
+                        # TODO optimize
+                        counts = [frame.count for frame in event.stack]
+                        if state.to_counts == counts:
                             self.counter.allow_breakpoints = True
                             # print("enter breakpoint after stepping back to count", state.to_count)
                             self.counter.breakpoint(event.frame)
@@ -68,20 +74,8 @@ class DejaView:
             self.dejaview = dejaview
 
         def do_back(self, arg: str):
-            if not arg:
-                arg = 1
-            elif arg.isdigit():
-                arg = int(arg)
-            else:
-                print("Invalid argument, must be a number")
-                return
-
-            count = self.counter.count - arg
-            if not 0 <= count < self.counter.count:
-                print(f"Invalid count, must be between 1 and {self.counter.count}")
-                return
             self.quitting = True
-            self.dejaview.rerun_to(count)
+            self.dejaview.step_back()
 
         def stop_here(self, frame):
             return self.counter.allow_breakpoints and super().stop_here(frame)

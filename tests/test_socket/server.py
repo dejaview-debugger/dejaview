@@ -119,7 +119,7 @@ server_addr = ("127.0.0.1", 10086)
 # UDP server to handle DNS queries.
 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
     s.bind(server_addr)
-    s.settimeout(1)  # Timeout to avoid indefinite blocking.
+    # s.settimeout(1)  # Timeout to avoid indefinite blocking.
 
     while True:
         try:
@@ -135,6 +135,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
 
             # Send the response back to the client.
             s.sendto(response, addr)
+            pass
         except socket.timeout:
             pass  # Ignore timeouts to continue the server loop.
         except KeyboardInterrupt:

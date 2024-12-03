@@ -4,17 +4,25 @@ import types
 import pdb
 import bdb
 import typing
+import inspect
 from dataclasses import dataclass
 
 from ..patching import patching
 
 
 @dataclass
-class Event:
-    count: int
+class StackFrame:
     frame: types.FrameType
-    event: str
-    arg: any
+    count: int
+
+
+@dataclass
+class Event:
+    count: int  # global count
+    stack: typing.List[StackFrame]  # count for each stack frame
+    frame: types.FrameType  # current frame
+    event: str  # event type
+    arg: any  # event argument
 
 
 class FrameCounter:
@@ -36,6 +44,7 @@ class FrameCounter:
 
         self.handlers = []
         self.count = 0
+        self.stack = [StackFrame(None, 0)]
         self.sub_tracer = None
         self.skipped_frames = []
         self.pdb_factory = lambda: self.CustomPdb(self)
@@ -90,12 +99,18 @@ class FrameCounter:
                 self.skipped_frames.append(frame)
                 return None
 
+            # Track the current stack
+            if event == "call":
+                self.stack.append(StackFrame(frame, 0))
+            elif event == "return":
+                self.stack.pop()
+
             try:
                 # Call the user-defined handlers, remove the ones that return True
                 self.handlers = [
                     h
                     for h in self.handlers
-                    if not h(Event(self.count, frame, event, arg))
+                    if not h(Event(self.count, self.stack, frame, event, arg))
                 ]
 
                 # Call the sub-tracer if it exists
@@ -115,6 +130,7 @@ class FrameCounter:
             finally:
                 if event == "line":
                     self.count += 1
+                    self.stack[-1].count += 1
 
         return tracer
 
@@ -162,4 +178,5 @@ class FrameCounter:
             self.counter = counter
 
         def do_count(self, arg: str):
-            print(self.counter.count)
+            for frame in self.counter.stack:
+                print(frame.count, frame.frame)
