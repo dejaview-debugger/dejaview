@@ -18,6 +18,8 @@ import { DebugProtocol } from "@vscode/debugprotocol";
 // Extend the DebugProtocol.LaunchRequestArguments type
 interface PythonLaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
   program: string; // Add the 'program' property
+  pythonPath?: string; // Optional Python binary path
+  cwd?: string; // Optional working directory
 }
 
 export class PythonDebugAdapter extends LoggingDebugSession {
@@ -89,7 +91,9 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     /// this.sendEvent(new OutputEvent(`Launching program: ${args.program}\n`));
     // Start a subprocess for pdb (ensure args.program is the script)
     const { spawn } = require("child_process");
-    const process = spawn("python3", ["-m", "pdb", args.program]);
+    const pythonPath = args.pythonPath || "python3";
+    const workingDir = args.cwd; // undefined means use current working directory
+    const process = spawn(pythonPath, ["-m", "dejaview", args.program], { cwd: workingDir });
 
     if (process !== null) {
       process.stdout.on("data", (data: Buffer) => {

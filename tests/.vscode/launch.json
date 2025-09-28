@@ -2,16 +2,11 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python 调试程序: 当前文件",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${file}",
-            "console": "integratedTerminal"
-        },
-        {
             "type": "python-pdb",
             "request": "launch",
             "name": "Launch Python with pdbbb",
+            "cwd": "${workspaceFolder}/..",
+            "pythonPath": "${workspaceFolder}/../.venv/bin/python",
             "program": "${file}"
         }
     ]

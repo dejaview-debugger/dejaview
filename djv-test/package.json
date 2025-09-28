@@ -26,24 +26,37 @@
       }
     ],
     "debuggers": [
-        {
-            "type": "python-pdb",
-            "label": "Python (pdb)",
-            "program": "./out/adapter.js",
-            "configurationAttributes": {
-                "launch": {
-                    "required": ["program"],
-                    "properties": {
-                        "program": {
-                            "type": "string",
-                            "description": "Path to the program to debug."
-                        }
-                    }
-                }
-            },
-            "languages": ["python"],
-            "runtime": "node"
-        }
+      {
+        "type": "python-pdb",
+        "label": "Python (pdb)",
+        "program": "./out/adapter.js",
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the program to debug."
+              },
+              "pythonPath": {
+                "type": "string",
+                "description": "Path to the Python interpreter.",
+                "default": "python3"
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory for the debugged program."
+              }
+            }
+          }
+        },
+        "languages": [
+          "python"
+        ],
+        "runtime": "node"
+      }
     ]
   },
   "scripts": {
