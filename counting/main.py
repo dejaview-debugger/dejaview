@@ -9,12 +9,6 @@ from .dejaview import DejaView
 
 
 class CustomPdb(DejaView.CustomPdb):
-    def __init__(self, dejaview):
-        super().__init__(dejaview)
-        # Initialize missing attributes that standard pdb.Pdb has
-        self.botframe = None
-        self._user_requested_quit = False
-
     def run(self, cmd, globals=None, locals=None):
         """Debug a statement executed via the exec() function.
 
@@ -91,6 +85,6 @@ def main():
             print("Uncaught exception. Entering post mortem debugging")
             print("Running 'cont' or 'step' will restart the program")
             t = e.__traceback__
-            pdb.interaction(None, t)
+            my_pdb.interaction(None, t)
             print("Post mortem debugger finished. The " + target +
                   " will be restarted")
