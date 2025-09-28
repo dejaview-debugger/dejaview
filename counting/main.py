@@ -1,7 +1,6 @@
 import getopt
 import sys
 import pdb
-import os
 import traceback
 import sys
 import bdb
@@ -10,6 +9,12 @@ from .dejaview import DejaView
 
 
 class CustomPdb(DejaView.CustomPdb):
+    def __init__(self, dejaview):
+        super().__init__(dejaview)
+        # Initialize missing attributes that standard pdb.Pdb has
+        self.botframe = None
+        self._user_requested_quit = False
+
     def run(self, cmd, globals=None, locals=None):
         """Debug a statement executed via the exec() function.
 
@@ -35,44 +40,27 @@ class CustomPdb(DejaView.CustomPdb):
                 sys.settrace(None)
 
 
+# copied from pdb.py
 def main():
-    opts, args = getopt.getopt(sys.argv[1:], "mhc:", ["help", "command="])
+    opts, args = getopt.getopt(sys.argv[1:], 'mhc:', ['help', 'command='])
 
     if not args:
         print(pdb._usage)
         sys.exit(2)
 
-    commands = []
-    run_as_module = False
-    for opt, optarg in opts:
-        if opt in ["-h", "--help"]:
-            print(pdb._usage)
-            sys.exit()
-        elif opt in ["-c", "--command"]:
-            commands.append(optarg)
-        elif opt in ["-m"]:
-            run_as_module = True
+    if any(opt in ['-h', '--help'] for opt, optarg in opts):
+        print(pdb._usage)
+        sys.exit()
 
-    mainpyfile = args[0]  # Get script filename
-    if not run_as_module and not os.path.exists(mainpyfile):
-        print("Error:", mainpyfile, "does not exist")
-        sys.exit(1)
+    commands = [optarg for opt, optarg in opts if opt in ['-c', '--command']]
 
-    if run_as_module:
-        import runpy
+    module_indicated = any(opt in ['-m'] for opt, optarg in opts)
+    cls = pdb._ModuleTarget if module_indicated else pdb._ScriptTarget
+    target = cls(args[0])
 
-        try:
-            runpy._get_module_details(mainpyfile)
-        except Exception:
-            traceback.print_exc()
-            sys.exit(1)
+    target.check()
 
-    sys.argv[:] = args  # Hide "pdb.py" and pdb options from argument list
-
-    if not run_as_module:
-        mainpyfile = os.path.realpath(mainpyfile)
-        # Replace pdb's dir with script's dir in front of module search path.
-        sys.path[0] = os.path.dirname(mainpyfile)
+    sys.argv[:] = args      # Hide "pdb.py" and pdb options from argument list
 
     # Note on saving/restoring sys.argv: it's a good idea when sys.argv was
     # modified by the script being debugged. It's a bad idea when it was
@@ -84,31 +72,25 @@ def main():
     my_pdb.rcLines.extend(commands)
     while True:
         try:
-            if run_as_module:
-                my_pdb._runmodule(mainpyfile)
-            else:
-                my_pdb._runscript(mainpyfile)
+            my_pdb._run(target)
             if my_pdb._user_requested_quit:
                 break
             print("The program finished and will be restarted")
         except pdb.Restart:
-            print("Restarting", mainpyfile, "with arguments:")
+            print("Restarting", target, "with arguments:")
             print("\t" + " ".join(sys.argv[1:]))
-        except SystemExit:
+        except SystemExit as e:
             # In most cases SystemExit does not warrant a post-mortem session.
-            print("The program exited via sys.exit(). Exit status:", end=" ")
-            print(sys.exc_info()[1])
+            print("The program exited via sys.exit(). Exit status:", end=' ')
+            print(e)
         except SyntaxError:
             traceback.print_exc()
             sys.exit(1)
-        except:
+        except BaseException as e:
             traceback.print_exc()
             print("Uncaught exception. Entering post mortem debugging")
             print("Running 'cont' or 'step' will restart the program")
-            t = sys.exc_info()[2]
-            my_pdb.interaction(None, t)
-            print(
-                "Post mortem debugger finished. The "
-                + mainpyfile
-                + " will be restarted"
-            )
+            t = e.__traceback__
+            pdb.interaction(None, t)
+            print("Post mortem debugger finished. The " + target +
+                  " will be restarted")
