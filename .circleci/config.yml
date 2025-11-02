@@ -8,6 +8,9 @@ jobs:
     environment:
       UV_CACHE_DIR: .uv-cache
     steps:
+      - add_ssh_keys:
+          fingerprints:
+            - "SHA256:14l5Hr5LXM0ETpJLG000An3CxzfbAAQNDPn5LHDIULk"
       - checkout
       - run:
           name: Ensure cache directory
