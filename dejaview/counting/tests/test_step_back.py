@@ -8,7 +8,7 @@ def foo():
     print("foo")
 
 
-def test():
+def prog_basic():
     print("start")
     for i in range(10):
         if i == 8:
@@ -25,7 +25,7 @@ def test():
     return 42
 
 
-def test_input():
+def prog_input():
     print("start")
     s1 = input("enter input 1: ")
     print("input 1:", s1)
@@ -36,7 +36,7 @@ def test_input():
     print("finish")
 
 
-def test_time():
+def prog_time():
     print("start")
     s = time.time()
     print("time:", s)
@@ -47,7 +47,7 @@ def test_time():
     print("finish")
 
 
-def test_call():
+def prog_call():
     def foo():
         print(1)
         print(2)
@@ -59,7 +59,7 @@ def test_call():
     print(5)
 
 
-def test_exception():
+def prog_exception():
     def foo(n):
         print(n, "start")
         if n == 0:
@@ -76,9 +76,10 @@ def test_exception():
     print(3)
 
 
-dejaview = DejaView()
-dejaview.counter.add_handler(print_handler)
-with dejaview:
-    test_call()
+if __name__ == "__main__":
+    dejaview = DejaView()
+    dejaview.counter.add_handler(print_handler)
+    with dejaview:
+        prog_call()
 
-print("Number of frames:", dejaview.counter.count)
+    print("Number of frames:", dejaview.counter.count)
