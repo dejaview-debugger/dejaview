@@ -1,8 +1,8 @@
+import atexit
+import multiprocessing
 import os
 import random
-import multiprocessing
 import signal
-import atexit
 
 
 # Test program for debug
@@ -36,7 +36,8 @@ class Snapshot:
         self.pid = pid
 
     def resume(self, state):
-        # TODO: we also need to pass recorded information from patched functions to the snapshot process
+        # TODO: we also need to pass recorded information from patched functions to the
+        # snapshot process
         self.queue.put(state)
         # TODO: what to do with the current process?
         _, status = os.waitpid(self.pid, 0)
@@ -51,7 +52,7 @@ class SnapshotManager:
         # register `cleanup` routine to terminate unkilled child processes
         atexit.register(self.cleanup)
 
-    def cleanup(self):  
+    def cleanup(self):
         # cleans up child processes on exit
         unkilled_children = []
         for pid in self.children:
@@ -88,19 +89,20 @@ class SnapshotManager:
         else:  # parent process
             # stores the id of the fork
             self.snapshots.append(Snapshot(queue, pid))
-            
+
             # keep track of pid so `SnapshotManager.cleanup` can terminate it later
-            self.children.append(pid)  
+            self.children.append(pid)
             return None
 
     def resume_snapshot(self, state):
-        # TODO: decide if we want to keep a copy of original snapshot after they have been resumed
+        # TODO: decide if we want to keep a copy of original snapshot
+        # after they have been resumed
         if len(self.snapshots) > 0:
             snapshot = self.snapshots.pop()
 
-            # remove child's pid that will run its own `cleanup` routine from the parent 
+            # remove child's pid that will run its own `cleanup` routine from the parent
             # to avoid cleaning it up twice
-            self.children = [c for c in self.children if c != snapshot.pid]  
+            self.children = [c for c in self.children if c != snapshot.pid]
             snapshot.resume(state)
         else:
             # print("no snapshot to resume")

@@ -1,13 +1,12 @@
+import bdb
 import os
+import pdb
 import sys
 import types
-import pdb
-import bdb
 import typing
-import inspect
 from dataclasses import dataclass
 
-from ..patching import patching
+from dejaview.patching import patching
 
 
 @dataclass
@@ -91,7 +90,9 @@ class FrameCounter:
                 # Is the current frame called by the last skipped frame?
                 if frame.f_back == self.skipped_frames[-1]:
                     self.skipped_frames.append(frame)
-                    return None  # Returning None makes us skip the current function but not calls made from it
+                    # Returning None makes us skip the current function
+                    # but not calls made from it
+                    return None
                 # Otherwise we're done with the last skipped frame so pop it
                 self.skipped_frames.pop()
 
@@ -117,7 +118,8 @@ class FrameCounter:
                 actual_sub_tracer = self.sub_tracer or sub_tracer
                 # self.sub_tracer = None
                 if actual_sub_tracer:
-                    # Disable patching while calling the sub-tracer to not interfere with the debugger
+                    # Disable patching while calling the sub-tracer to not interfere
+                    # with the debugger
                     with patching.SetPatchingMode(patching.PatchingMode.OFF):
                         new_tracer = actual_sub_tracer(frame, event, arg)
                     if new_tracer != sub_tracer:

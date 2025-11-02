@@ -1,32 +1,31 @@
-import getopt
-import sys
-import pdb
-import traceback
-import sys
 import bdb
+import getopt
+import pdb
+import sys
+import traceback
 
-from .dejaview import DejaView
+from dejaview.counting.dejaview import DejaView
 
 
 class CustomPdb(DejaView.CustomPdb):
-    def run(self, cmd, globals=None, locals=None):
+    def run(self, cmd, globals_=None, locals_=None):
         """Debug a statement executed via the exec() function.
 
         globals defaults to __main__.dict; locals defaults to globals.
         """
-        if globals is None:
-            import __main__
+        if globals_ is None:
+            import __main__  # noqa: PLC0415
 
-            globals = __main__.__dict__
-        if locals is None:
-            locals = globals
+            globals_ = __main__.__dict__
+        if locals_ is None:
+            locals_ = globals_
         self.reset()
         if isinstance(cmd, str):
             cmd = compile(cmd, "<string>", "exec")
         with self.dejaview:
             sys.settrace(self.trace_dispatch)
             try:
-                exec(cmd, globals, locals)
+                exec(cmd, globals_, locals_)
             except bdb.BdbQuit:
                 pass
             finally:
@@ -36,25 +35,25 @@ class CustomPdb(DejaView.CustomPdb):
 
 # copied from pdb.py
 def main():
-    opts, args = getopt.getopt(sys.argv[1:], 'mhc:', ['help', 'command='])
+    opts, args = getopt.getopt(sys.argv[1:], "mhc:", ["help", "command="])
 
     if not args:
         print(pdb._usage)
         sys.exit(2)
 
-    if any(opt in ['-h', '--help'] for opt, optarg in opts):
+    if any(opt in ["-h", "--help"] for opt, optarg in opts):
         print(pdb._usage)
         sys.exit()
 
-    commands = [optarg for opt, optarg in opts if opt in ['-c', '--command']]
+    commands = [optarg for opt, optarg in opts if opt in ["-c", "--command"]]
 
-    module_indicated = any(opt in ['-m'] for opt, optarg in opts)
+    module_indicated = any(opt in ["-m"] for opt, optarg in opts)
     cls = pdb._ModuleTarget if module_indicated else pdb._ScriptTarget
     target = cls(args[0])
 
     target.check()
 
-    sys.argv[:] = args      # Hide "pdb.py" and pdb options from argument list
+    sys.argv[:] = args  # Hide "pdb.py" and pdb options from argument list
 
     # Note on saving/restoring sys.argv: it's a good idea when sys.argv was
     # modified by the script being debugged. It's a bad idea when it was
@@ -75,7 +74,7 @@ def main():
             print("\t" + " ".join(sys.argv[1:]))
         except SystemExit as e:
             # In most cases SystemExit does not warrant a post-mortem session.
-            print("The program exited via sys.exit(). Exit status:", end=' ')
+            print("The program exited via sys.exit(). Exit status:", end=" ")
             print(e)
         except SyntaxError:
             traceback.print_exc()
@@ -86,5 +85,4 @@ def main():
             print("Running 'cont' or 'step' will restart the program")
             t = e.__traceback__
             my_pdb.interaction(None, t)
-            print("Post mortem debugger finished. The " + target +
-                  " will be restarted")
+            print("Post mortem debugger finished. The " + target + " will be restarted")

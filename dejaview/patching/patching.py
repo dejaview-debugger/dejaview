@@ -2,15 +2,14 @@ import inspect
 import math
 import random
 import types
-from functools import wraps
-from typing import TypeVar, Type
-from enum import Enum
 import typing
+from enum import Enum
+from functools import wraps
+from typing import Type, TypeVar
 from unittest.mock import patch
 
-from .patcher import Patcher, GenericPatcher
-from .state_store import StateStore
-
+from dejaview.patching.patcher import GenericPatcher, Patcher
+from dejaview.patching.state_store import StateStore
 
 reset_funcs = []
 capture_funcs = []
@@ -32,11 +31,12 @@ class PatchingMode(Enum):
     MUTED = 2
 
 
-patching_mode = PatchingMode.NORMAL
+class _PatchingState:
+    mode: PatchingMode = PatchingMode.NORMAL
 
 
 def get_patching_mode():
-    return patching_mode
+    return _PatchingState.mode
 
 
 class SetPatchingMode:
@@ -44,13 +44,11 @@ class SetPatchingMode:
         self.mode = mode
 
     def __enter__(self):
-        global patching_mode
-        self.old = patching_mode
-        patching_mode = self.mode
+        self.old = _PatchingState.mode
+        _PatchingState.mode = self.mode
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        global patching_mode
-        patching_mode = self.old
+        _PatchingState.mode = self.old
 
 
 TPatcher = TypeVar("TPatcher", bound=Patcher)
@@ -76,7 +74,14 @@ def log_results(func, patcher: Type[TPatcher] = GenericPatcher):
 
         nonlocal current_seq
         current_seq += 1
-        # print("Current sequence number:", current_seq, "Function:", func.__name__, "contains:", StateStore.get(func).contains(current_seq))
+        # print(
+        #     "Current sequence number:",
+        #     current_seq,
+        #     "Function:",
+        #     func.__name__,
+        #     "contains:",
+        #     StateStore.get(func).contains(current_seq),
+        # )
         if not StateStore.get(func).contains(current_seq):
             # play
             run, state = patcher.play(func, *args, **kwargs)  # Execute the function
@@ -126,15 +131,15 @@ class Patches:
     def __init__(self):
         self.mocks = []
 
-    def decorate(self, object, attribute, decorator: typing.Callable):
-        original = getattr(object, attribute)
+    def decorate(self, obj, attribute, decorator: typing.Callable):
+        original = getattr(obj, attribute)
         mock_bind = decorator(original)
-        mock = patch.object(object, attribute, mock_bind)
+        mock = patch.object(obj, attribute, mock_bind)
         mock.__enter__()
         self.mocks.append(mock)
 
-    def patch(self, object, attribute, patcher: Patcher = GenericPatcher):
-        self.decorate(object, attribute, lambda f: log_results(f, patcher))
+    def patch(self, obj, attribute, patcher: Patcher = GenericPatcher):
+        self.decorate(obj, attribute, lambda f: log_results(f, patcher))
 
     def __enter__(self):
         return self

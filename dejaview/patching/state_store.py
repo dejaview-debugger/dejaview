@@ -1,5 +1,5 @@
-from typing import TypeVar
 from collections import defaultdict
+from typing import TypeVar
 
 TState = TypeVar("TState")
 
