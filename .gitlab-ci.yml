@@ -7,22 +7,22 @@ variables:
   UV_LINK_MODE: copy
 
 stages:
-	- test
+  - test
 
 pytest:
-	stage: test
-	image: ghcr.io/astral-sh/uv:${UV_VERSION}-python${PYTHON_VERSION}-${BASE_LAYER}
-	variables:
-		UV_CACHE_DIR: .uv-cache
-	cache:
-		- key:
-				files:
-					- uv.lock
-			paths:
-				- $UV_CACHE_DIR
+  stage: test
+  image: ghcr.io/astral-sh/uv:${UV_VERSION}-python${PYTHON_VERSION}-${BASE_LAYER}
+  variables:
+    UV_CACHE_DIR: .uv-cache
+  cache:
+    - key:
+        files:
+          - uv.lock
+      paths:
+        - $UV_CACHE_DIR
   before_script:
-		- uv sync --dev
-	script:
-		- uv run pytest
-	after_script:
-		- uv cache prune --ci
+    - uv sync --dev
+  script:
+    - uv run pytest
+  after_script:
+    - uv cache prune --ci
