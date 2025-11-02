@@ -37,11 +37,11 @@ jobs:
         paths:
         - .uv-cache
     - run:
-      name: Ruff Check
-      command: uv run ruff check
+        name: Ruff Check
+        command: uv run ruff check
     - run:
-      name: Ruff Format
-      command: uv run ruff format --diff
+        name: Ruff Format
+        command: uv run ruff format --diff
     - run:
         name: Run pytest
         command: uv run pytest
