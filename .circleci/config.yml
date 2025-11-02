@@ -10,7 +10,7 @@ jobs:
     steps:
       - add_ssh_keys:
           fingerprints:
-            - "SHA256:14l5Hr5LXM0ETpJLG000An3CxzfbAAQNDPn5LHDIULk"
+            - "e8:f4:a7:f1:4e:ca:e9:e7:f9:c4:9b:0c:a2:52:4b:41"
       - checkout
       - run:
           name: Ensure cache directory
