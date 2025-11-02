@@ -4,7 +4,7 @@
 
 To run the test:
 ```
-python3 -m dejaview tests/test.py
+uv run python3 -m dejaview tests/programs/test.py
 ```
 
 To kill leftover processes:
