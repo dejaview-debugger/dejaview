@@ -3,6 +3,7 @@ import getopt
 import pdb
 import sys
 import traceback
+import typing
 
 from dejaview.counting.dejaview import DejaView
 
@@ -34,6 +35,7 @@ class CustomPdb(DejaView.CustomPdb):
 
 
 # copied from pdb.py
+@typing.no_type_check
 def main():
     opts, args = getopt.getopt(sys.argv[1:], "mhc:", ["help", "command="])
 

@@ -43,6 +43,9 @@ jobs:
         name: Ruff Format
         command: uv run ruff format --diff
     - run:
+        name: Mypy
+        command: uv run mypy dejaview
+    - run:
         name: Run pytest
         command: uv run pytest
     - run:

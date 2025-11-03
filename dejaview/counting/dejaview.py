@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, List
+from typing import Any, Generator, List
 
 from dejaview.counting.counting import Event, FrameCounter
 from dejaview.patching import patching
@@ -39,12 +39,12 @@ class DejaView:
         self.patches = setup_patching()
         return self
 
-    def setup_snapshot(self):
+    def setup_snapshot(self) -> None:
         # capture snapshot
         state: State = self.snapshot_manager.capture_snapshot()
         if state is not None:  # if we're resuming from a snapshot
             # add handler to enter debugger at to_count
-            def handler():
+            def handler() -> Generator[None, Event, None]:
                 with patching.SetPatchingMode(patching.PatchingMode.MUTED):
                     while True:
                         event = yield

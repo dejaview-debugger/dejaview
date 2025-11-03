@@ -11,7 +11,7 @@ from dejaview.patching import patching
 
 @dataclass
 class StackFrame:
-    frame: types.FrameType
+    frame: types.FrameType | None
     count: int
 
 
@@ -21,11 +21,11 @@ class Event:
     stack: typing.List[StackFrame]  # count for each stack frame
     frame: types.FrameType  # current frame
     event: str  # event type
-    arg: any  # event argument
+    arg: typing.Any  # event argument
 
 
 class FrameCounter:
-    def __init__(self):
+    def __init__(self) -> None:
         self.excluded_prefixes = (
             sys.prefix,
             os.path.dirname(os.__file__),
@@ -41,17 +41,17 @@ class FrameCounter:
             self.__exit__.__code__,
         }
 
-        self.handlers = []
+        self.handlers: list[typing.Callable[[Event], bool]] = []
         self.count = 0
         self.stack = [StackFrame(None, 0)]
         self.sub_tracer = None
-        self.skipped_frames = []
+        self.skipped_frames: list[types.FrameType] = []
         self.pdb_factory = lambda: self.CustomPdb(self)
-        self.pdb = None
+        self.pdb: pdb.Pdb | None = None
         self.allow_breakpoints = True
 
     def add_handler_generator(self, handler: typing.Generator[None, Event, None]):
-        handler.send(None)
+        next(handler)
 
         def handler_wrapper(event: Event):
             try:
@@ -65,11 +65,11 @@ class FrameCounter:
     def add_handler(self, handler: typing.Callable[[Event], bool]):
         self.handlers.append(handler)
 
-    def settrace(self, func):
+    def settrace(self, func) -> None:
         self.sub_tracer = func
 
         # Patch f_trace set by the debugger
-        frame: types.FrameType = sys._getframe().f_back
+        frame: types.FrameType | None = sys._getframe().f_back
         while frame and frame != self.base_frame:
             if frame.f_trace is not None:
                 frame.f_trace = self.get_tracer(frame.f_trace)
@@ -84,7 +84,7 @@ class FrameCounter:
         )
 
     def get_tracer(self, sub_tracer):
-        def tracer(frame: types.FrameType, event: str, arg: any) -> any:
+        def tracer(frame: types.FrameType, event: str, arg: typing.Any) -> typing.Any:
             # Skip frames that should be skipped
             while self.skipped_frames:
                 # Is the current frame called by the last skipped frame?

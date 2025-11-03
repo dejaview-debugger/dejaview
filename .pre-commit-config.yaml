@@ -1,15 +1,21 @@
 repos:
 - repo: local
   hooks:
-  - id: uv-run-ruff-check
+  - id: ruff-check
     name: Ruff Check
     entry: uv run ruff check --fix --exit-non-zero-on-fix
     language: system
     pass_filenames: false
     types: [ python ]
-  - id: uv-run-ruff-format
+  - id: ruff-format
     name: Ruff Format
     entry: uv run ruff format --exit-non-zero-on-format
+    language: system
+    pass_filenames: false
+    types: [ python ]
+  - id: mypy
+    name: Ruff Format
+    entry: uv run mypy dejaview
     language: system
     pass_filenames: false
     types: [ python ]

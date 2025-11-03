@@ -11,7 +11,13 @@ testpaths = ["dejaview"]
 addopts = "-n auto --dist=loadfile"
 
 [dependency-groups]
-dev = ["pexpect>=4.9.0", "pytest>=8.4.2", "pytest-xdist>=3.8.0", "ruff>=0.14.3"]
+dev = [
+    "mypy>=1.18.2",
+    "pexpect>=4.9.0",
+    "pytest>=8.4.2",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.14.3",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.6,<0.10.0"]
@@ -32,3 +38,7 @@ select = ["E", "F", "W", "A", "PLC", "PLE", "PLW", "I", "TID"]
 
 [tool.ruff]
 extend-exclude = ["dejaview/tests/programs"]
+
+[tool.mypy]
+exclude = ["^dejaview/tests/programs/"]
+check_untyped_defs = true

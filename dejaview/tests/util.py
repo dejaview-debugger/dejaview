@@ -4,7 +4,7 @@ from functools import cache
 from pathlib import Path
 from textwrap import dedent
 
-import pexpect
+import pexpect  # type: ignore[import-untyped]
 
 
 @cache

@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import random
 import signal
+from typing import Any
 
 
 # Test program for debug
@@ -65,7 +66,7 @@ class SnapshotManager:
 
     def capture_snapshot(self):
         # print("capturing snapshot")
-        queue = multiprocessing.SimpleQueue()
+        queue = multiprocessing.SimpleQueue[tuple[Any | None, BaseException | None]]()
         random_state = random.getstate()
         pid = os.fork()
         random.setstate(random_state)
