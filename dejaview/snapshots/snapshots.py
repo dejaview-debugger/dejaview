@@ -1,5 +1,5 @@
 import atexit
-import multiprocessing
+import multiprocessing as mp
 import os
 import random
 import signal
@@ -66,7 +66,9 @@ class SnapshotManager:
 
     def capture_snapshot(self):
         # print("capturing snapshot")
-        queue = multiprocessing.SimpleQueue[tuple[Any | None, BaseException | None]]()
+        queue: mp.SimpleQueue[tuple[Any | None, BaseException | None]] = (
+            mp.SimpleQueue()
+        )
         random_state = random.getstate()
         pid = os.fork()
         random.setstate(random_state)
