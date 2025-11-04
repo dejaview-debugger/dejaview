@@ -7,14 +7,38 @@ requires-python = ">=3.12"
 dependencies = []
 
 [tool.pytest.ini_options]
-testpaths = [
-	"dejaview",
-]
+testpaths = ["dejaview"]
 addopts = "-n auto --dist=loadfile"
 
 [dependency-groups]
 dev = [
+    "mypy>=1.18.2",
     "pexpect>=4.9.0",
     "pytest>=8.4.2",
     "pytest-xdist>=3.8.0",
+    "ruff>=0.14.3",
 ]
+
+[build-system]
+requires = ["uv_build>=0.9.6,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Disallow all relative imports.
+ban-relative-imports = "all"
+
+[tool.ruff.lint]
+# Add the `line-too-long` rule to the enforced rule set. By default, Ruff omits rules that
+# overlap with the use of a formatter, like Black, but we can override this behavior by
+# explicitly adding the rule.
+select = ["E", "F", "W", "A", "PLC", "PLE", "PLW", "I", "TID"]
+
+[tool.ruff]
+extend-exclude = ["dejaview/tests/programs"]
+
+[tool.mypy]
+exclude = ["^dejaview/tests/programs/"]
+check_untyped_defs = true

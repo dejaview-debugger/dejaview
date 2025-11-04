@@ -1,15 +1,10 @@
-from functools import wraps
-import random
-import time
-import socket
 import builtins
+import random
+import socket
+import time
+from functools import wraps
 
-from .patching import (
-    decorate_func,
-    Patches,
-    get_patching_mode,
-    PatchingMode,
-)
+from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
 
 
 # Pass through normally, but skip if muted

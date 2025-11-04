@@ -1,24 +1,38 @@
-"""
-examples of function patching
-"""
+"""Definitions for patcher abstractions used by the patching helpers."""
 
-from typing import Callable, Protocol, Tuple, TypeVar
+from __future__ import annotations
 
-TState = TypeVar("TState")
-TReturn = TypeVar("TReturn")
+from typing import Any, Callable, Protocol
 
 
-class Patcher(Protocol[TReturn, TState]):
+class Patcher[TReturn, TState](Protocol):
+    """Protocol implemented by patchers.
+
+    Patchers record the result of a call during "play" and can later "replay"
+    that result without invoking the original function again.
+    """
+
     @staticmethod
-    def play(func, *args, **kwargs) -> Tuple[Callable[[], TReturn], TState]: ...
+    def play(
+        func: Callable[..., TReturn],
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[Callable[[], TReturn], TState]: ...
 
     @staticmethod
-    def replay(func, state: TState, *args, **kwargs) -> Callable[[], TReturn]: ...
+    def replay(
+        func: Callable[..., TReturn],
+        state: TState,
+        *args: Any,
+        **kwargs: Any,
+    ) -> TReturn: ...
 
 
-class GenericPatcher(Patcher[TReturn, TState]):
+class GenericPatcher(Patcher[Any, tuple[Any | None, BaseException | None]]):
+    """Default patcher that stores return value and any raised exception."""
+
     @staticmethod
-    def return_or_raise(state: TState) -> TReturn:
+    def return_or_raise(state: tuple[Any | None, BaseException | None]) -> Any:
         ret, ex = state
         if ex is not None:
             raise ex
@@ -26,15 +40,15 @@ class GenericPatcher(Patcher[TReturn, TState]):
 
     @staticmethod
     def play(func, *args, **kwargs):
-        ret = None
-        ex = None
+        ret: Any | None = None
+        ex: BaseException | None = None
         try:
             ret = func(*args, **kwargs)
-        except Exception as e:
-            ex = e
+        except Exception as err:  # noqa: BLE001 - re-raising below preserves context
+            ex = err
         state = (ret, ex)
 
-        def run():
+        def run() -> Any:
             return GenericPatcher.return_or_raise(state)
 
         return run, state

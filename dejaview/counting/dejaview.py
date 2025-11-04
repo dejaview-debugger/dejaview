@@ -1,17 +1,18 @@
 from dataclasses import dataclass
-from typing import Any, List
+from typing import Any, Generator, List
 
-from .counting import FrameCounter, Event
-from ..snapshots import SnapshotManager
-from ..patching import patching
-from ..patching.state_store import StateStore
-from ..patching.setup import setup_patching
+from dejaview.counting.counting import Event, FrameCounter
+from dejaview.patching import patching
+from dejaview.patching.setup import setup_patching
+from dejaview.patching.state_store import StateStore
+from dejaview.snapshots.snapshots import SnapshotManager
 
 
 @dataclass
 class State:
     to_counts: List[int]
-    function_states: Any  # should be equivalent to get_type_hints(StateStore.serialize()).get('return')
+    function_states: Any
+    """Should be equivalent to get_type_hints(StateStore.serialize()).get('return')"""
     # TODO: add debugger state
 
 
@@ -38,12 +39,12 @@ class DejaView:
         self.patches = setup_patching()
         return self
 
-    def setup_snapshot(self):
+    def setup_snapshot(self) -> None:
         # capture snapshot
         state: State = self.snapshot_manager.capture_snapshot()
         if state is not None:  # if we're resuming from a snapshot
             # add handler to enter debugger at to_count
-            def handler():
+            def handler() -> Generator[None, Event, None]:
                 with patching.SetPatchingMode(patching.PatchingMode.MUTED):
                     while True:
                         event = yield
@@ -51,7 +52,10 @@ class DejaView:
                         counts = [frame.count for frame in event.stack]
                         if state.to_counts == counts:
                             self.counter.allow_breakpoints = True
-                            # print("enter breakpoint after stepping back to count", state.to_count)
+                            # print(
+                            #     "enter breakpoint after stepping back to count",
+                            #     state.to_count,
+                            # )
                             self.counter.breakpoint(event.frame)
                             break
 

@@ -1,7 +1,7 @@
 import random
 import time
 
-from ..dejaview import DejaView, print_handler
+from dejaview.counting.dejaview import DejaView, print_handler
 
 
 def foo():

@@ -4,7 +4,7 @@ from functools import cache
 from pathlib import Path
 from textwrap import dedent
 
-import pexpect
+import pexpect  # type: ignore[import-untyped]
 
 
 @cache
@@ -50,7 +50,8 @@ def launch_dejaview(program: str, timeout: float = 10) -> DejaViewInstance:
     """
     Launch DejaView with the given program string.
     """
-    # Delete on close instead of scope exit since we don't know the lifetime of the DejaViewInstance
+    # Delete on close instead of scope exit
+    # since we don't know the lifetime of the DejaViewInstance
     tmpfile = tempfile.NamedTemporaryFile(
         suffix=".py", delete=False, delete_on_close=True
     )
