@@ -5,3 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = [
+	"dejaview",
+]
+addopts = "-n auto --dist=loadfile"
+
+[dependency-groups]
+dev = [
+    "pexpect>=4.9.0",
+    "pytest>=8.4.2",
+    "pytest-xdist>=3.8.0",
+]

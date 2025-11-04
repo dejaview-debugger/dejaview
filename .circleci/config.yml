@@ -1,0 +1,50 @@
+version: 2.1
+
+jobs:
+  test:
+    docker:
+      - image: ghcr.io/astral-sh/uv:0.5-python3.12-bookworm-slim
+    working_directory: ~/project
+    environment:
+      UV_CACHE_DIR: .uv-cache
+    steps:
+      - add_ssh_keys:
+          fingerprints:
+            - "e8:f4:a7:f1:4e:ca:e9:e7:f9:c4:9b:0c:a2:52:4b:41"
+      - run:
+          name: Install git/ssh client
+          command: |
+            apt-get update
+            apt-get install -y git openssh-client
+      - run:
+          name: Trust git.uwaterloo.ca host key
+          command: |
+            mkdir -p ~/.ssh
+            ssh-keyscan git.uwaterloo.ca >> ~/.ssh/known_hosts
+      - checkout
+      - run:
+          name: Ensure cache directory
+          command: mkdir -p "$UV_CACHE_DIR"
+      - restore_cache:
+          keys:
+            - v1-uv-cache-{{ checksum "uv.lock" }}
+            - v1-uv-cache-
+      - run:
+          name: Install dependencies
+          command: uv sync --dev
+      - save_cache:
+          key: v1-uv-cache-{{ checksum "uv.lock" }}
+          paths:
+            - .uv-cache
+      - run:
+          name: Run pytest
+          command: uv run pytest
+      - run:
+          name: Prune UV cache
+          when: always
+          command: uv cache prune --ci
+
+workflows:
+  test:
+    jobs:
+      - test
