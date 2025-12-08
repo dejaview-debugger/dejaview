@@ -9,7 +9,9 @@ def test_quit():
     )
     d.expect_prompt()
     d.sendline("quit")
-    assert "101" not in d.expect_end()
+    end = d.expect_end()
+    assert "101" not in end
+    assert "Traceback" not in end
 
 
 def test_continue():

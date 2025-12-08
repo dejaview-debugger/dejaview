@@ -127,8 +127,8 @@ class FrameCounter:
                         return self.get_tracer(new_tracer)
                 return tracer
             except bdb.BdbQuit:
-                # Exit the program
-                exit(1)
+                # Propagate debugger quit so the outer loop can shut down cleanly
+                raise
             finally:
                 if event == "line":
                     self.count += 1

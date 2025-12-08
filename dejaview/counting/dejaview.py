@@ -1,11 +1,28 @@
+import sys
 from dataclasses import dataclass
-from typing import Any, Generator, List
+from typing import Any, Generator, List, TextIO, cast
 
 from dejaview.counting.counting import Event, FrameCounter
 from dejaview.patching import patching
 from dejaview.patching.setup import setup_patching
 from dejaview.patching.state_store import StateStore
 from dejaview.snapshots.snapshots import SnapshotManager
+
+
+class _SafeStdin:
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+
+    def readline(self, *args, **kwargs):
+        try:
+            return self._stream.readline(*args, **kwargs)
+        except ValueError as exc:
+            if exc.args and exc.args[0] == "I/O operation on closed file.":
+                return ""
+            raise
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
 
 
 @dataclass
@@ -76,6 +93,8 @@ class DejaView:
         def __init__(self, dejaview: "DejaView"):
             super().__init__(dejaview.counter)
             self.dejaview = dejaview
+            self.use_rawinput = False
+            self.stdin = cast(TextIO, _SafeStdin(sys.stdin))
 
         def do_back(self, arg: str):
             self.quitting = True

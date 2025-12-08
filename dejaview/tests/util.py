@@ -42,8 +42,10 @@ class DejaViewInstance(pexpect.spawn):
         Send the quit command and expect EOF.
         """
         self.sendline("quit")
-        self.expect_end()
-        # TODO: assert that no EOF error happens during quit
+        msg = self.expect_end()
+        assert "Traceback (most recent call last):" not in msg, msg
+        self.close()
+        assert self.exitstatus == 0, f"Process exited with status {self.exitstatus}"
 
 
 def launch_dejaview(program: str, timeout: float = 10) -> DejaViewInstance:
