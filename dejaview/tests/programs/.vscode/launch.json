@@ -5,8 +5,8 @@
             "type": "python-pdb",
             "request": "launch",
             "name": "Launch Python with pdbbb",
-            "cwd": "${workspaceFolder}/..",
-            "pythonPath": "${workspaceFolder}/../.venv/bin/python",
+            "cwd": "${workspaceFolder}/../../..",
+            "pythonPath": "${workspaceFolder}/../../../.venv/bin/python",
             "program": "${file}"
         }
     ]

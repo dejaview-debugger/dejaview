@@ -1,18 +1,7 @@
 import * as vscode from "vscode";
+import * as net from "net";
 
-import {
-  ContinuedEvent,
-  DebugSession,
-  LoggingDebugSession,
-  InitializedEvent,
-  TerminatedEvent,
-  OutputEvent,
-  StoppedEvent,
-  Variable,
-  StackFrame,
-  ThreadEvent,
-  Thread,
-} from "@vscode/debugadapter";
+import { ContinuedEvent, DebugSession, LoggingDebugSession, InitializedEvent, TerminatedEvent, OutputEvent, StoppedEvent, Variable, StackFrame, ThreadEvent, Thread } from "@vscode/debugadapter";
 import { DebugProtocol } from "@vscode/debugprotocol";
 
 // Extend the DebugProtocol.LaunchRequestArguments type
@@ -20,55 +9,65 @@ interface PythonLaunchRequestArguments extends DebugProtocol.LaunchRequestArgume
   program: string; // Add the 'program' property
   pythonPath?: string; // Optional Python binary path
   cwd?: string; // Optional working directory
+  port?: number; // Optional debug port (default: 5678)
 }
 
 export class PythonDebugAdapter extends LoggingDebugSession {
+  // Set to false to disable debug logs
+  private static readonly DEBUG = false;
+
   private process: import("child_process").ChildProcess | null = null;
   private breakpoints: { [file: string]: number[] } = {}; // Store breakpoints by file
   private is_running: boolean = false;
+  private socket: net.Socket | null = null;
+  private server: net.Server | null = null;
+  private port: number = 5678;
+  private messageBuffer: string = "";
+  private commandQueue: Array<{ command: string; callback?: (data: any) => void }> = [];
+  private currentStopLocation: { filename: string; lineno: number } | null = null;
 
   constructor() {
     super();
+    this.debugLog("PythonDebugAdapter constructed");
   }
 
-  protected initializeRequest(
-    response: DebugProtocol.InitializeResponse,
-    args: DebugProtocol.InitializeRequestArguments
-  ): void {
+  private debugLog(message: string): void {
+    if (PythonDebugAdapter.DEBUG) {
+      this.sendEvent(new OutputEvent(message + "\n", "console"));
+    }
+  }
+
+  protected initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
+    this.debugLog("Initialize request received");
     response.body = response.body || {};
     response.body.supportsConfigurationDoneRequest = true;
     response.body.supportsStepBack = true;
     response.body.supportsStepInTargetsRequest = true;
     response.body.supportsSteppingGranularity = true;
     response.body.supportsSingleThreadExecutionRequests = true;
+    // response.body.supportsSetVariable = true;
     this.sendResponse(response);
   }
 
-  protected configurationDoneRequest(
-    response: DebugProtocol.ConfigurationDoneResponse,
-    args: DebugProtocol.ConfigurationDoneArguments,
-    request?: DebugProtocol.Request
-  ): void {
+  protected configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse, args: DebugProtocol.ConfigurationDoneArguments, request?: DebugProtocol.Request): void {
     super.configurationDoneRequest(response, args);
     // Get to the first breakpoint
-    this.process?.stdin?.write("continue\n");
+    this.sendCommand("continue");
     this.sendEvent(new ContinuedEvent(1));
     this.sendEvent(new StoppedEvent("breakpoint", 1));
     this.sendResponse(response);
   }
 
-  protected setBreakPointsRequest(
-    response: DebugProtocol.SetBreakpointsResponse,
-    args: DebugProtocol.SetBreakpointsArguments
-  ): void {
+  protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
     const filePath = args.source.path!;
     const breakpoints = args.breakpoints || [];
     const breakpoint_lines = breakpoints.map((bp) => bp.line);
 
     // Set new breakpoints
     breakpoint_lines.forEach((line) => {
-      const breakCommand = `break ${filePath}:${line}\n`;
-      this.process?.stdin?.write(breakCommand);
+      const breakCommand = `break ${filePath}:${line}`;
+      this.debugLog(`Setting breakpoint: ${breakCommand}`);
+      this.sendCommand(breakCommand);
     });
 
     // Update internal breakpoint state
@@ -84,66 +83,166 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     this.sendResponse(response);
   }
 
-  protected launchRequest(
-    response: DebugProtocol.LaunchResponse,
-    args: PythonLaunchRequestArguments
-  ): void {
-    /// this.sendEvent(new OutputEvent(`Launching program: ${args.program}\n`));
+  protected launchRequest(response: DebugProtocol.LaunchResponse, args: PythonLaunchRequestArguments): void {
     // Start a subprocess for pdb (ensure args.program is the script)
-    const { spawn } = require("child_process");
-    const pythonPath = args.pythonPath || "python3";
-    const workingDir = args.cwd; // undefined means use current working directory
-    const process = spawn(pythonPath, ["-m", "dejaview", args.program], { cwd: workingDir });
+    this.debugLog("=== LAUNCH REQUEST STARTED ===");
+    this.debugLog(`Program: ${args.program}`);
+    this.debugLog(`Python: ${args.pythonPath}`);
+    this.debugLog(`CWD: ${args.cwd}`);
 
-    if (process !== null) {
-      process.stdout.on("data", (data: Buffer) => {
-        const output = data.toString();
-        /// this.sendEvent(new OutputEvent("DEBUG: ----------------\n"));
-        this.sendEvent(new OutputEvent(output));
+    this.port = args.port || 5678;
+    this.debugLog(`Port: ${this.port}`);
 
-        // Detect if execution is paused and notify VSCode
-        if (output.includes("->") && this.is_running) {
-          // Example marker for a paused state
-          /// this.sendEvent(new OutputEvent("DEBUG: PAUSED"));
-          this.is_running = false;
-          this.sendEvent(new StoppedEvent("step", 1)); // Notify paused state
-        }
+    // Create TCP server to listen for debugger connection
+    this.server = net.createServer((socket) => {
+      this.debugLog("Debugger connected via socket");
+      this.socket = socket;
 
-        // Detect if a breakpoint has been hit
-        /*if (output.includes("Breakpoint")) {
-          const match = output.match(/at (.*):(\d+)/);
-          if (match) {
-            const [, filePath, line] = match;
-            this.sendEvent(new StoppedEvent("breakpoint", 1));
-
-            // Optionally, log breakpoint hit information
-            /// console.log(`Breakpoint hit at ${filePath}:${line}`);
-          }
-        }*/
+      socket.on("data", (data: Buffer) => {
+        this.handleSocketData(data);
       });
 
-      process.stderr.on("data", (data: Buffer) => {
-        this.sendEvent(new OutputEvent(data.toString(), "stderr"));
+      socket.on("error", (err) => {
+        this.sendEvent(new OutputEvent(`Socket error: ${err.message}\n`, "stderr"));
       });
 
-      process.on("close", () => {
+      socket.on("close", () => {
+        this.debugLog("Socket closed");
         this.sendEvent(new TerminatedEvent());
       });
-      this.process = process;
-    }
+
+      // Flush any queued commands now that socket is connected
+      this.flushCommandQueue();
+    });
+
+    this.server.listen(this.port, "127.0.0.1", () => {
+      this.debugLog(`Server listening on port ${this.port}`);
+
+      // Now spawn the Python process with the port as an argument
+      const { spawn } = require("child_process");
+      const pythonPath = args.pythonPath || "python3";
+      const workingDir = args.cwd;
+      const process = spawn(pythonPath, ["-m", "dejaview", "--port", this.port.toString(), args.program], { cwd: workingDir });
+
+      if (process !== null) {
+        process.stdout.on("data", (data: Buffer) => {
+          const output = data.toString();
+          this.sendEvent(new OutputEvent(output, "stdout"));
+        });
+
+        process.stderr.on("data", (data: Buffer) => {
+          this.sendEvent(new OutputEvent(data.toString(), "stderr"));
+        });
+
+        process.on("close", (code: number) => {
+          this.sendEvent(new OutputEvent(`Process exited with code ${code}\n`, "console"));
+          if (this.socket) {
+            this.socket.end();
+          }
+          if (this.server) {
+            this.server.close();
+          }
+        });
+        this.process = process;
+      }
+    });
+
     this.sendResponse(response);
     this.sendEvent(new InitializedEvent());
   }
 
-  // Handle input from the Debug Console
-  protected evaluateRequest(
-    response: DebugProtocol.EvaluateResponse,
-    args: DebugProtocol.EvaluateArguments
-  ): void {
-    if (this.process !== null && this.process.stdin !== null) {
-      const expression = args.expression + "\n"; // Append newline for pdb
-      this.process.stdin.write(expression);
+  private handleSocketData(data: Buffer): void {
+    // Accumulate data in buffer
+    this.messageBuffer += data.toString();
+
+    // Process complete messages (delimited by newlines)
+    let newlineIndex;
+    while ((newlineIndex = this.messageBuffer.indexOf("\n")) !== -1) {
+      const message = this.messageBuffer.substring(0, newlineIndex);
+      this.messageBuffer = this.messageBuffer.substring(newlineIndex + 1);
+
+      if (message.trim()) {
+        this.debugLog(`Received message: ${message}`);
+        this.processDebuggerMessage(message);
+      }
     }
+  }
+
+  private processDebuggerMessage(message: string): void {
+    try {
+      const data = JSON.parse(message);
+
+      switch (data.type) {
+        case "output":
+          this.sendEvent(new OutputEvent(data.content, data.category || "console"));
+          break;
+        case "stopped":
+          this.is_running = false;
+          // Cache location if provided in the stopped event
+          if (data.filename && data.lineno) {
+            this.currentStopLocation = { filename: data.filename, lineno: data.lineno };
+            this.debugLog(`Cached stop location: ${data.filename}:${data.lineno}`);
+          } else {
+            this.currentStopLocation = null;
+          }
+          this.sendEvent(new StoppedEvent(data.reason || "step", data.threadId || 1));
+          break;
+        case "continued":
+          this.is_running = true;
+          this.currentStopLocation = null;
+          this.sendEvent(new ContinuedEvent(data.threadId || 1));
+          break;
+        case "terminated":
+          this.sendEvent(new TerminatedEvent());
+          break;
+        case "response":
+          // Handle responses to commands (e.g., for variables, stack trace)
+          this.handleCommandResponse(data);
+          break;
+        default:
+          throw new Error(`Unknown message type: ${data.type}`);
+      }
+    } catch (e) {
+      this.sendEvent(new OutputEvent(`Error processing message: ${e}\n`, "stderr"));
+      throw e;
+    }
+  }
+
+  private commandCallbacks: Map<string, (data: any) => void> = new Map();
+
+  private handleCommandResponse(data: any): void {
+    const callback = this.commandCallbacks.get(data.command);
+    if (callback) {
+      callback(data);
+      this.commandCallbacks.delete(data.command);
+    }
+  }
+
+  private sendCommand(command: string, callback?: (data: any) => void): void {
+    if (this.socket && !this.socket.destroyed) {
+      const message = JSON.stringify({ command }) + "\n";
+      this.socket.write(message);
+
+      if (callback) {
+        this.commandCallbacks.set(command, callback);
+      }
+    } else {
+      // Queue the command if socket is not connected yet
+      this.commandQueue.push({ command, callback });
+    }
+  }
+
+  private flushCommandQueue(): void {
+    this.debugLog(`Flushing ${this.commandQueue.length} queued commands`);
+    while (this.commandQueue.length > 0) {
+      const { command, callback } = this.commandQueue.shift()!;
+      this.sendCommand(command, callback);
+    }
+  }
+
+  // Handle input from the Debug Console
+  protected evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): void {
+    this.sendCommand(args.expression);
 
     response.body = {
       result: "",
@@ -152,110 +251,68 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     this.sendResponse(response);
   }
 
-  protected continueRequest(
-    response: DebugProtocol.ContinueResponse,
-    args: DebugProtocol.ContinueArguments
-  ): void {
-    if (this.process) {
-      this.is_running = true;
-      this.process?.stdin?.write("continue\n");
-      this.sendEvent(new ContinuedEvent(1)); // Notify that the program has resumed
-    }
-    this.sendResponse(response); // Notify VSCode that the command was sent
-  }
-
-  protected nextRequest(
-    response: DebugProtocol.NextResponse,
-    args: DebugProtocol.NextArguments,
-    request?: DebugProtocol.Request
-  ): void {
-    if (this.process) {
-      this.is_running = true;
-      this.process?.stdin?.write("next\n");
-      this.sendEvent(new ContinuedEvent(1)); // Notify that the program has resumed
-    }
+  protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments): void {
+    this.is_running = true;
+    this.sendCommand("continue");
+    this.sendEvent(new ContinuedEvent(args.threadId || 1));
     this.sendResponse(response);
   }
 
-  protected stepInRequest(
-    response: DebugProtocol.StepInResponse,
-    args: DebugProtocol.StepInArguments,
-    request?: DebugProtocol.Request
-  ): void {
-    if (this.process) {
-      this.is_running = true;
-      this.process?.stdin?.write("step\n");
-      this.sendEvent(new ContinuedEvent(1)); // Notify that the program has resumed
-    }
+  protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments, request?: DebugProtocol.Request): void {
+    this.is_running = true;
+    this.sendCommand("next");
+    this.sendEvent(new ContinuedEvent(args.threadId || 1));
     this.sendResponse(response);
   }
 
-  protected stepOutRequest(
-    response: DebugProtocol.StepOutResponse,
-    args: DebugProtocol.StepOutArguments
-  ): void {
-    if (this.process) {
-      this.is_running = true;
-      this.process?.stdin?.write("return\n");
-      this.sendEvent(new ContinuedEvent(1)); // Notify that the program has resumed
-    }
+  protected stepInRequest(response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments, request?: DebugProtocol.Request): void {
+    this.is_running = true;
+    this.sendCommand("step");
+    this.sendEvent(new ContinuedEvent(args.threadId || 1));
     this.sendResponse(response);
   }
 
-  protected stepBackRequest(
-    response: DebugProtocol.StepBackResponse,
-    args: DebugProtocol.StepBackArguments,
-  ): void {
-    if (this.process) {
-      this.is_running = true;
-      this.process?.stdin?.write("back\n");
-      this.sendEvent(new ContinuedEvent(1)); // Notify that the program has resumed
-    }
+  protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments): void {
+    this.is_running = true;
+    this.sendCommand("return");
+    this.sendEvent(new ContinuedEvent(args.threadId || 1));
     this.sendResponse(response);
   }
 
-  protected pauseRequest(
-    response: DebugProtocol.PauseResponse,
-    args: DebugProtocol.PauseArguments,
-    request?: DebugProtocol.Request
-  ): void {
-    /// this.sendEvent(new OutputEvent("DEBUG: PAUSE REQUESTED"));
+  protected stepBackRequest(response: DebugProtocol.StepBackResponse, args: DebugProtocol.StepBackArguments): void {
+    this.is_running = true;
+    this.sendCommand("back");
+    this.sendEvent(new ContinuedEvent(args.threadId || 1));
     this.sendResponse(response);
   }
 
-  protected variablesRequest(
-    response: DebugProtocol.VariablesResponse,
-    args: DebugProtocol.VariablesArguments
-  ): void {
-    const variables: DebugProtocol.Variable[] = [];
-    /// this.sendEvent(new OutputEvent("DEBUG: VARIABLES REQUESTED\n"));
+  protected pauseRequest(response: DebugProtocol.PauseResponse, args: DebugProtocol.PauseArguments, request?: DebugProtocol.Request): void {
+    this.sendResponse(response);
+  }
 
+  protected variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): void {
     if (args.variablesReference === 1) {
-      // Local variables
-      this.process?.stdin?.write("locals()\n");
-    }
-    /* else if (args.variablesReference === 2) {
-      // Global variables
-      this.process?.stdin?.write("globals()\n");
-    }*/
+      // Local variables - use socket communication
+      this.sendCommand("locals()", (data) => {
+        const variables: DebugProtocol.Variable[] = [];
+        const varsData = data.variables || {};
 
-    this.process?.stdout?.once("data", (data: Buffer) => {
-      const output = data.toString();
-      const parsedVariables = this.parseVariables(output);
+        for (const [key, value] of Object.entries(varsData)) {
+          variables.push({
+            name: key,
+            value: String(value),
+            type: typeof value,
+            variablesReference: 0,
+          });
+        }
 
-      for (const [key, value] of Object.entries(parsedVariables)) {
-        variables.push({
-          name: key,
-          value: value.toString(),
-          type: typeof value,
-          variablesReference: 0, // Make this non-zero for expandable variables
-        });
-        /// this.sendEvent(new OutputEvent(`DEBUG: ${key} = ${value}\n`));
-      }
-
-      response.body = { variables };
+        response.body = { variables };
+        this.sendResponse(response);
+      });
+    } else {
+      response.body = { variables: [] };
       this.sendResponse(response);
-    });
+    }
   }
 
   private parseVariables(output: string): Record<string, any> {
@@ -275,11 +332,7 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     return {};
   }
 
-  protected scopesRequest(
-    response: DebugProtocol.ScopesResponse,
-    args: DebugProtocol.ScopesArguments
-  ): void {
-    /// this.sendEvent(new OutputEvent("DEBUG: SCOPES REQUESTED\n"));
+  protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
     const scopes = [
       {
         name: "Local",
@@ -300,8 +353,6 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     const stackFrames: DebugProtocol.StackFrame[] = [];
     const lines = output.split("\n");
 
-    /// this.sendEvent(new OutputEvent(`DEBUG???: get stack\n`));
-
     lines.reverse().forEach((line, index) => {
       const match = line.match(/^>?\s+(.*)\((\d+)\)(.*)$/);
       if (match) {
@@ -315,7 +366,6 @@ export class PythonDebugAdapter extends LoggingDebugSession {
           return;
         }
         functionName = functionName.substring(0, functionName.length - 2);
-        /// this.sendEvent(new OutputEvent(`DEBUG???: ${file}:${lineNumber} ${functionName}\n`));
         stackFrames.push({
           id: stackFrames.length, // Unique frame ID
           name: functionName,
@@ -345,43 +395,59 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     return stackFrames;
   }
 
-  protected stackTraceRequest(
-    response: DebugProtocol.StackTraceResponse,
-    args: DebugProtocol.StackTraceArguments,
-    request?: DebugProtocol.Request
-  ): void {
-    // Send the `where` command to pdb
-    /// this.sendEvent(new OutputEvent("DEBUG: STACK TRACE REQUESTED\n"));
-    this.process?.stdin?.write("where\n");
+  protected stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments, request?: DebugProtocol.Request): void {
+    // If we have a cached stop location, use it for the top frame
+    if (this.currentStopLocation) {
+      this.debugLog(`Using cached stop location: ${this.currentStopLocation.filename}:${this.currentStopLocation.lineno}`);
 
-    this.process?.stdout?.once("data", (data: Buffer) => {
-      const output = data.toString();
+      // Send the `where` command via socket to get the full stack
+      this.sendCommand("where", (data) => {
+        const frames = data.stackFrames || [];
 
-      // Parse pdb output into stack frames
-      const frames = this.parseCallStack(output);
+        // Override the top frame with the cached location
+        if (frames.length > 0) {
+          frames[0].line = this.currentStopLocation!.lineno;
+          frames[0].source = {
+            path: this.currentStopLocation!.filename,
+            name: this.currentStopLocation!.filename.split("/").pop() || this.currentStopLocation!.filename,
+          };
+          this.debugLog(`Overrode top frame to ${this.currentStopLocation!.filename}:${this.currentStopLocation!.lineno}`);
+        }
 
-      response.body = {
-        stackFrames: frames,
-        totalFrames: frames.length,
-      };
-      this.sendResponse(response);
-    });
+        response.body = {
+          stackFrames: frames,
+          totalFrames: frames.length,
+        };
+        this.sendResponse(response);
+      });
+    } else {
+      // No cached location, use the `where` command normally
+      this.sendCommand("where", (data) => {
+        const frames = data.stackFrames || [];
+
+        response.body = {
+          stackFrames: frames,
+          totalFrames: frames.length,
+        };
+        this.sendResponse(response);
+      });
+    }
   }
 
-  protected threadsRequest(
-    response: DebugProtocol.ThreadsResponse,
-    request?: DebugProtocol.Request
-  ): void {
+  protected threadsRequest(response: DebugProtocol.ThreadsResponse, request?: DebugProtocol.Request): void {
     response.body = {
       threads: [new Thread(1, "Main Thread")],
     };
     this.sendResponse(response);
   }
 
-  protected disconnectRequest(
-    response: DebugProtocol.DisconnectResponse,
-    args: DebugProtocol.DisconnectArguments
-  ): void {
+  protected disconnectRequest(response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments): void {
+    if (this.socket) {
+      this.socket.end();
+    }
+    if (this.server) {
+      this.server.close();
+    }
     if (this.process) {
       this.process.kill();
     }
