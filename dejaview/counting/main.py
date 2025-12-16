@@ -6,6 +6,7 @@ import traceback
 import typing
 
 from dejaview.counting.dejaview import DejaView
+from dejaview.counting.socket_client import DebugSocketClient
 
 
 class CustomPdb(DejaView.CustomPdb):
@@ -37,7 +38,7 @@ class CustomPdb(DejaView.CustomPdb):
 # copied from pdb.py
 @typing.no_type_check
 def main():
-    opts, args = getopt.getopt(sys.argv[1:], "mhc:", ["help", "command="])
+    opts, args = getopt.getopt(sys.argv[1:], "mhc:p:", ["help", "command=", "port="])
 
     if not args:
         print(pdb._usage)
@@ -48,6 +49,13 @@ def main():
         sys.exit()
 
     commands = [optarg for opt, optarg in opts if opt in ["-c", "--command"]]
+
+    # Get port if specified
+    port = None
+    for opt, optarg in opts:
+        if opt in ["-p", "--port"]:
+            port = int(optarg)
+            break
 
     module_indicated = any(opt in ["-m"] for opt, optarg in opts)
     cls = pdb._ModuleTarget if module_indicated else pdb._ScriptTarget
@@ -61,7 +69,16 @@ def main():
     # modified by the script being debugged. It's a bad idea when it was
     # changed by the user from the command line. There is a "restart" command
     # which allows explicit specification of command line arguments.
-    dejaview = DejaView()
+
+    # Create socket client if port is specified
+    socket_client = None
+    if port is not None:
+        socket_client = DebugSocketClient(port=port)
+        if not socket_client.connect():
+            print(f"Warning: Failed to connect to debug adapter on port {port}")
+            socket_client = None
+
+    dejaview = DejaView(socket_client=socket_client)
     dejaview.counter.pdb_factory = lambda: CustomPdb(dejaview)
     my_pdb = dejaview.get_pdb()
     my_pdb.rcLines.extend(commands)
@@ -88,3 +105,7 @@ def main():
             t = e.__traceback__
             my_pdb.interaction(None, t)
             print("Post mortem debugger finished. The " + target + " will be restarted")
+
+    # Clean up socket connection
+    if socket_client:
+        socket_client.disconnect()

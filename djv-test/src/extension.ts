@@ -4,34 +4,21 @@ import * as vscode from "vscode";
 import { PythonDebugAdapter } from "./adapter";
 import { DebugSession } from "@vscode/debugadapter";
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
-export function activate(context: vscode.ExtensionContext) {
-  // Use the console to output diagnostic information (console.log) and errors (console.error)
-  // This line of code will only be executed once when your extension is activated
-  console.log('Congratulations, your extension "djv-test" is now active!');
-  DebugSession.run(PythonDebugAdapter);
+import * as path from "path";
+class PythonDebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
+  constructor(private context: vscode.ExtensionContext) {}
 
-  // The command has been defined in the package.json file
-  // Now provide the implementation of the command with registerCommand
-  // The commandId parameter must match the command field in package.json
-  const disposable = vscode.commands.registerCommand("djv-test.helloWorld", () => {
-    // The code you place here will be executed every time your command is executed
-    // Display a message box to the user
-    vscode.window.showInformationMessage("Hello World from dejaview_test!");
-    // Obtain path  to current file
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      vscode.window.showInformationMessage("No active text editor");
-      return;
-    }
-    const document = editor.document;
-    const currentFile = document.fileName;
-    vscode.window.showInformationMessage(currentFile);
-  });
-
-  context.subscriptions.push(disposable);
+  createDebugAdapterDescriptor(session: vscode.DebugSession): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
+    const adapterPath = path.join(this.context.extensionPath, "out", "adapter.js");
+    return new vscode.DebugAdapterExecutable("node", [adapterPath]);
+  }
 }
 
-// This method is called when your extension is deactivated
+// This method is called when the extension is activated
+export function activate(context: vscode.ExtensionContext) {
+  // Attach the debug adapter factory to the "python-pdb" debug type
+  context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory("python-pdb", new PythonDebugAdapterFactory(context)));
+}
+
+// This method is called when the extension is deactivated
 export function deactivate() {}
