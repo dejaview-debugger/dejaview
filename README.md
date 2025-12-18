@@ -9,7 +9,7 @@ DejaView layers deterministic frame counting, runtime patching, and snapshotting
 - Inside the session, use the usual `pdb` commands plus `back` to restore the prior execution snapshot.
 
 ## VS Code Extension
-1. Open djv-test folder in VS Code
+1. Open dejaview-extension folder in VS Code
 2. Press `F5` to open a new window with your extension loaded.
 3. In the new VS Code window from the previous step, open `dejaview/tests/programs` folder.
 4. Run the script you want to debug from the by going to the "Run and Debug" tab and click the green arrow.
