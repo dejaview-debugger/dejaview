@@ -1,7 +1,7 @@
 {
-  "name": "djv-test",
-  "displayName": "dejaview_test",
-  "description": "Dejaview test",
+  "name": "dejaview-extension",
+  "displayName": "Dejaview Extension",
+  "description": "Dejaview Extension",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.95.0"
@@ -19,12 +19,7 @@
     }
   ],
   "contributes": {
-    "commands": [
-      {
-        "command": "djv-test.helloWorld",
-        "title": "Hello World"
-      }
-    ],
+    "commands": [],
     "debuggers": [
       {
         "type": "python-pdb",
