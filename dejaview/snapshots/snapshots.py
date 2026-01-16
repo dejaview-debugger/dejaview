@@ -24,7 +24,7 @@ class HybridQueue:
     serialized payload. Uses cloudpickle when available to support serialization of
     dynamic Python objects like nested functions, lambdas, and dynamically defined
     classes. Falls back to standard pickle if cloudpickle is not available.
-    
+
     The HybridQueue decouples the transport layer (os.pipe) from the serialization
     layer (cloudpickle/pickle), providing byte-level control over interprocess
     communication. Messages are length-prefixed with 4 bytes to delimit boundaries
