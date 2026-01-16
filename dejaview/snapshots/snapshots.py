@@ -1,11 +1,8 @@
 import atexit
-import io
 import os
 import random
 import signal
-import socket
 import struct
-import warnings
 from typing import Any
 
 # Try cloudpickle first for dynamic-function coverage
@@ -20,180 +17,18 @@ except Exception:
     _USE_CLOUDPICKLE = False
 
 
-# Shadow wrapper registry
-class ShadowRegistry:
-    """
-    Register handlers for types that cannot be reliably serialized.
-    A proxy is a serializable representation of the original object,
-    storing info to reconstruct the object upon deserialization.
-    """
-
-    def __init__(self):
-        self._handlers = []
-
-    # helper method to register a handler
-    def register(self, type_check, serializer_fn, deserializer_fn):
-        # typecheck: takes object, returns True if handler can serialize it
-        # serializer_fn: takes object, returns a serializable proxy
-        # deserializer_fn: takes serializable proxy, returns original object
-        self._handlers.append((type_check, serializer_fn, deserializer_fn))
-
-    # serialize an object using registered handlers
-    # returns: shadow proxy if handled, else original object
-    def serialize(self, obj):
-        for type_check, s_fn, _ in self._handlers:
-            try:
-                if type_check(obj):
-                    proxy = s_fn(obj)
-                    # mark proxy for shadow deserialization
-                    return {
-                        "__shadow__": True,
-                        "__type__": s_fn.__name__,
-                        "data": proxy,
-                    }
-            except Exception:
-                # handler failed, try next
-                continue
-        return obj  # no handler — return original (may still fail serialization)
-
-    # deserialize an object using registered handlers
-    # returns: original object if handled, else input candidate
-    def deserialize(self, candidate):
-        # if candidate is a dictionary and marked as shadow proxy
-        if isinstance(candidate, dict) and candidate.get("__shadow__"):
-            type_name = candidate.get("__type__")
-            data = candidate.get("data")
-            for _, _, d_fn in self._handlers:
-                if d_fn.__name__ == type_name:
-                    try:
-                        return d_fn(data)  # reconstruct original object
-                    except Exception:
-                        warnings.warn(f"shadow deserializer {type_name} failed")
-                        return candidate
-            # no matching deserializer found
-            return candidate
-        return candidate
-
-
-# initialize global shadow registry
-_shadow_registry = ShadowRegistry()
-
-
-# --- File shadow handler ---
-def _is_file(obj):
-    return isinstance(obj, io.IOBase)
-
-
-def _serialize_file(f):
-    # Only support named files that can be reopened;
-    # otherwise provide metadata fallback.
-    name = getattr(f, "name", None)
-    mode = getattr(f, "mode", None)
-    try:
-        pos = f.tell()
-    except Exception:
-        pos = None
-    if name and isinstance(name, str):
-        return {"kind": "file", "name": name, "mode": mode, "pos": pos}
-    else:
-        # unnamed file (e.g., BytesIO) -> capture contents
-        try:
-            f.seek(0)
-            content = f.read()
-            return {"kind": "memoryfile", "content": content, "pos": pos}
-        except Exception:
-            return {"kind": "file_unserializable", "repr": repr(f)}
-
-
-def _deserialize_file(meta):
-    kind = meta.get("kind")
-    if kind == "file":
-        name = meta.get("name")
-        mode = meta.get("mode") or "rb"
-        pos = meta.get("pos") or 0
-        try:
-            f = open(name, mode)
-            try:
-                f.seek(pos)
-            except Exception:
-                pass
-            return f
-        except Exception:
-            warnings.warn(f"could not reopen file {name}")
-            return None
-    elif kind == "memoryfile":
-        content = meta.get("content", b"")
-        bio = io.BytesIO(content)
-        pos = meta.get("pos") or 0
-        try:
-            bio.seek(pos)
-        except Exception:
-            pass
-        return bio
-    else:
-        return None
-
-
-# register file shadow handler
-_shadow_registry.register(_is_file, _serialize_file, _deserialize_file)
-
-
-# --- Socket shadow handler ---
-def _is_socket(obj):
-    return isinstance(obj, socket.socket)
-
-
-def _serialize_socket(s):
-    try:
-        sockname = s.getsockname()
-    except Exception:
-        sockname = None
-    try:
-        peer = s.getpeername()
-    except Exception:
-        peer = None
-    fam = getattr(s, "family", None)
-    typ = getattr(s, "type", None)
-    return {
-        "kind": "socket",
-        "family": fam,
-        "type": typ,
-        "sockname": sockname,
-        "peer": peer,
-    }
-
-
-def _deserialize_socket(meta):
-    # Best-effort: only attempt for TCP sockets with a peer address
-    kind = meta.get("kind")
-    if kind != "socket":
-        return None
-    fam = meta.get("family")
-    peer = meta.get("peer")
-    typ = meta.get("type")
-    if peer and (fam in (socket.AF_INET, socket.AF_INET6) and typ & socket.SOCK_STREAM):
-        # try reconnect
-        try:
-            host, port = peer[:2]
-            s = socket.create_connection((host, port))
-            return s
-        except Exception:
-            warnings.warn(f"could not reconnect to socket peer {peer}")
-            return None
-    return None
-
-
-# register socket shadow handler
-_shadow_registry.register(_is_socket, _serialize_socket, _deserialize_socket)
-
-
-# --- HybridQueue: pipe + cloudpickle/pickle + shadow proxies ---
+# --- HybridQueue: pipe + cloudpickle/pickle ---
 class HybridQueue:
     """
     Simple blocking one-way queue implemented with an os.pipe and a length-prefixed
-    serialized payload. Uses cloudpickle when available to maximize function coverage.
-    If an object cannot be serialized, the ShadowRegistry is consulted to produce a
-    serializable proxy which is reconstructed on receive.
+    serialized payload. Uses cloudpickle when available to support serialization of
+    dynamic Python objects like nested functions, lambdas, and dynamically defined
+    classes. Falls back to standard pickle if cloudpickle is not available.
+    
+    The HybridQueue decouples the transport layer (os.pipe) from the serialization
+    layer (cloudpickle/pickle), providing byte-level control over interprocess
+    communication. Messages are length-prefixed with 4 bytes to delimit boundaries
+    in the byte stream.
     """
 
     # used for length prefix for each message sent in pipe
@@ -210,39 +45,23 @@ class HybridQueue:
 
     # add a new item to the queue
     def put(self, obj):
-        # Try direct serialization
-        try:
-            data = self._serializer(obj)
-        except Exception:
-            # attempt shadow serialization
-            proxy = _shadow_registry.serialize(obj)
-            try:
-                data = self._serializer(proxy)
-            except Exception:
-                # as a last resort, send a repr proxy
-                fallback = {
-                    "__shadow__": True,
-                    "__type__": "repr_fallback",
-                    "data": repr(obj),
-                }
-                data = self._serializer(fallback)
-        # write length of data
+        # Serialize the object using cloudpickle or pickle
+        data = self._serializer(obj)
+        # Write 4-byte length prefix
         hdr = HybridQueue._HDR.pack(len(data))
         self._write_all(hdr)
-        # write data
+        # Write serialized data
         self._write_all(data)
 
     # get an item from the queue
     def get(self):
-        # read 4 bytes header
+        # Read 4-byte header containing message length
         hdr = self._read_n(HybridQueue._HDR.size)
         if not hdr:
             raise EOFError("pipe closed")
-        (nbytes,) = HybridQueue._HDR.unpack(hdr)  # read length
-        payload = self._read_n(nbytes)  # read data
-        obj = self._deserializer(payload)  # deserialize data
-        # check if deserialized object is shadow proxy, reconstruct if necessary
-        obj = _shadow_registry.deserialize(obj)
+        (nbytes,) = HybridQueue._HDR.unpack(hdr)  # Extract length
+        payload = self._read_n(nbytes)  # Read exact number of bytes
+        obj = self._deserializer(payload)  # Deserialize back to object
         return obj
 
     # close the queue
