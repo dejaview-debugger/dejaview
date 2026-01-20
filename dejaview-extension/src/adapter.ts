@@ -286,6 +286,13 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     this.sendResponse(response);
   }
 
+  protected reverseContinueRequest(response: DebugProtocol.StepBackResponse, args: DebugProtocol.StepBackArguments): void {
+    this.is_running = true;
+    this.sendCommand("rc");
+    this.sendEvent(new ContinuedEvent(args.threadId || 1));
+    this.sendResponse(response);
+  }
+
   protected pauseRequest(response: DebugProtocol.PauseResponse, args: DebugProtocol.PauseArguments, request?: DebugProtocol.Request): void {
     this.sendResponse(response);
   }

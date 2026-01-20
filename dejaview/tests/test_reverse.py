@@ -1,8 +1,6 @@
 import re
 import time
 
-import pytest
-
 from dejaview.tests.util import launch_dejaview
 
 
@@ -113,7 +111,6 @@ def test_pid():
     d.quit()
 
 
-@pytest.mark.xfail(reason="reverse continue not yet supported")
 def test_reverse_continue():
     d = launch_dejaview(
         """
@@ -147,8 +144,121 @@ def test_reverse_continue():
     out = d.expect_prompt()
     assert "Line 4" in out
 
-    d.sendline("c")
+    d.sendline("n")
     out = d.expect_prompt()
     assert "Line 5" in out
 
+    d.sendline("rc")
+    out = d.expect_prompt()
+    assert "Line 4" in out
+
     d.quit()
+
+
+def test_rc_function():
+    d = launch_dejaview(
+        """
+        def foo(x):  # Line 1
+            print(4)  # Line 2
+
+        print(2)  # Line 4
+        foo(3)
+        print(3)  # Line 6
+        """
+    )
+
+    assert "Line 1" in d.expect_prompt()
+    d.sendline("b 4")
+    d.expect_prompt()
+    d.sendline("b 6")
+    d.expect_prompt()
+    d.sendline("c")
+    assert "Line 4" in d.expect_prompt()
+    d.sendline("c")
+    assert "Line 6" in d.expect_prompt()
+    d.sendline("rc")
+    assert "Line 4" in d.expect_prompt()
+    d.sendline("c")
+    assert "Line 6" in d.expect_prompt()
+    d.quit()
+
+
+def test_extend_head_step_over():
+    d = launch_dejaview(
+        """
+        a = 1234      # Line 1
+        def foo():    # Line 2
+            print(a)  # Line 3
+            print(a)  # Line 4
+        print(a)      # Line 5
+        foo()         # Line 6
+        print(a)      # Line 7
+        """
+    )
+    assert "Line 1" in d.expect_prompt()
+    d.sendline("b 4")
+    d.expect_prompt()
+    d.sendline("c")
+    assert "Line 4" in d.expect_prompt()
+    d.sendline("b 6")
+    d.expect_prompt()
+    d.sendline("rc")
+    assert "Line 6" in d.expect_prompt()
+    d.sendline("clear 1 2")
+    d.expect_prompt()
+    d.sendline("n")  # step over
+    out = d.expect_prompt()
+    assert "Line 7" in out
+    assert out.count("1234") == 2
+
+
+def test_extend_head_step_out():
+    d = launch_dejaview(
+        """
+        a = 1234      # Line 1
+        def foo():    # Line 2
+            print(a)  # Line 3
+            print(a)  # Line 4
+        print(a)      # Line 5
+        foo()         # Line 6
+        print(a)      # Line 7
+        """
+    )
+    assert "Line 1" in d.expect_prompt()
+    d.sendline("b 4")
+    d.expect_prompt()
+    d.sendline("c")
+    assert "Line 4" in d.expect_prompt()
+    d.sendline("back")
+    assert "Line 3" in d.expect_prompt()
+    d.sendline("clear 1")
+    d.expect_prompt()
+    d.sendline("return")  # step out
+    out = d.expect_prompt()
+    assert "--Return--" in out
+    assert out.count("1234") == 2
+
+
+def test_extend_head_until():
+    d = launch_dejaview(
+        """
+        a = 1234      # Line 1
+        print(a)      # Line 2
+        print(a)      # Line 3
+        print(a)      # Line 4
+        print(a)      # Line 5
+        """
+    )
+    assert "Line 1" in d.expect_prompt()
+    d.sendline("b 3")
+    d.expect_prompt()
+    d.sendline("c")
+    assert "Line 3" in d.expect_prompt()
+    d.sendline("back")
+    assert "Line 2" in d.expect_prompt()
+    d.sendline("clear 1")
+    d.expect_prompt()
+    d.sendline("until 5")  # step until
+    out = d.expect_prompt()
+    assert "Line 5" in out
+    assert out.count("1234") == 3

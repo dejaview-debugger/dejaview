@@ -51,6 +51,11 @@ class _SafeStdin:
 
 @dataclass
 class CounterPosition:
+    """
+    Represents a unique position in the execution history.
+    The position is defined by the execution count of each frame in the call stack.
+    """
+
     counts: List[int]
 
     def decrement(self) -> None:
@@ -80,6 +85,10 @@ class BreakpointState:
 
 @dataclass
 class DebuggerStopInfo:
+    """
+    Information about where the debugger should stop next.
+    """
+
     stoplineno: int
     stop_index: int | None  # index into FrameCounter.stack, -1 for botframe
     return_index: int | None  # index into FrameCounter.stack, -1 for botframe
@@ -102,7 +111,7 @@ class ReverseToTargetRequest:
     Reverse to the given counter position.
     """
 
-    to: CounterPosition
+    to: CounterPosition | None  # None means we go to the beginning
 
 
 @dataclass
@@ -125,11 +134,19 @@ class ReverseContinueRequest:
 
 @dataclass
 class ContinueRequest:
+    """
+    Request to continue execution in the root process, extending the timeline.
+    """
+
     pass
 
 
 @dataclass
 class QuitRequest:
+    """
+    Request to terminate the debugging session.
+    """
+
     pass
 
 
@@ -140,7 +157,12 @@ RequestForRoot = RequestForReplay | RequestForRootOnly
 
 @dataclass
 class LastBreakpointResult:
-    to_counts: CounterPosition
+    """
+    Result of a ProbeBreakpointRequest.
+    Contains the position of the last hit breakpoint, or None if none was found.
+    """
+
+    to_counts: CounterPosition | None
 
 
 # Is a return value, not an action
@@ -149,12 +171,21 @@ ValueResult = LastBreakpointResult
 
 @dataclass
 class NextActionResult:
+    """
+    Indicates that the replay process ended with an action for the root process
+    to handle.
+    """
+
     request: RequestForRoot
     debugger_state: DebuggerState
 
 
 @dataclass
 class ResumeSnapshotArg:
+    """
+    Arguments passed from the root process to a new replay process.
+    """
+
     function_states: Any
     """Should be equivalent to get_type_hints(StateStore.serialize()).get('return')"""
 
@@ -166,6 +197,10 @@ class ResumeSnapshotArg:
 
 @dataclass
 class ResumeSnapshotReturn:
+    """
+    The result returned from a replay process to the root process.
+    """
+
     result: ValueResult | NextActionResult
 
 
@@ -185,6 +220,12 @@ class DejaView:
         if self.socket_client and self.socket_client.connected:
             self.socket_client.set_command_handler(self._handle_socket_command)
 
+    @property
+    def pdb(self) -> "DejaView.CustomPdb | None":
+        pdb = self.counter.pdb
+        assert isinstance(pdb, DejaView.CustomPdb | None)
+        return pdb
+
     def _handle_socket_command(self, command: str):
         """Handle commands at the DejaView level, before pdb is ready."""
         debug_log(f"[DejaView] Received command: {command}")
@@ -193,11 +234,21 @@ class DejaView:
         if command.startswith("break "):
             break_arg = command[6:]  # Remove "break " prefix
             debug_log(f"[DejaView] Queueing breakpoint: {break_arg}")
-            self.pending_breakpoints.append(break_arg)
+            if self.pdb and self.pdb.is_initialized:
+                debug_log(f"[DejaView] Pdb is ready, setting breakpoint: {break_arg}")
+                try:
+                    self.pdb.do_break(break_arg)
+                except Exception as e:
+                    debug_log(
+                        f"[DejaView] Failed to set breakpoint immediately: "
+                        f"{e}\n{traceback.format_exc()}"
+                    )
+            else:
+                self.pending_breakpoints.append(break_arg)
         else:
             # For other commands, try to pass to pdb if it exists
-            pdb = self.counter.pdb
-            if pdb and hasattr(pdb, "_handle_socket_command"):
+            pdb = self.pdb
+            if pdb:
                 debug_log(f"[DejaView] Forwarding to pdb: {command}")
                 pdb._handle_socket_command(command)
             else:
@@ -223,6 +274,7 @@ class DejaView:
     def execute_request_with_return(self, request: RequestForReplay) -> ValueResult:
         ret = self.execute_request_for_replay(request)
         result = ret.result
+        debug_log(f"execute_request_with_return got {result=}")
         assert isinstance(result, ValueResult)
         return result
 
@@ -249,10 +301,15 @@ class DejaView:
         while True:
             if isinstance(request, RequestForReplay):
                 ret = self.execute_request_for_replay(request)
-                assert isinstance(ret.result, NextActionResult)
-                self.apply_debugger_state(ret.result.debugger_state)
-                request = ret.result.request
-                continue
+                result = ret.result
+                assert isinstance(result, NextActionResult)
+                self.apply_debugger_state(result.debugger_state)
+                request = result.request
+            elif isinstance(request, ReverseContinueRequest):
+                probe_result = self.execute_request_with_return(
+                    ProbeBreakpointRequest(before=request.before)
+                )
+                request = ReverseToTargetRequest(to=probe_result.to_counts)
             elif isinstance(request, QuitRequest):
                 pdb_instance = self.get_pdb()
                 pdb_instance.do_quit("")
@@ -260,9 +317,7 @@ class DejaView:
             elif isinstance(request, ContinueRequest):
                 return
             else:
-                raise NotImplementedError(
-                    f"Unimplemented request type: {type(request)}"
-                )
+                assert_never(request)
 
     def get_current_position(self) -> CounterPosition:
         counts = [frame.count for frame in self.counter.stack]
@@ -389,6 +444,14 @@ class DejaView:
         request = ReverseToTargetRequest(to=pos)
         self.execute_request(request)
 
+    def reverse_continue(self):
+        """
+        Reverse-continue to the most recent breakpoint before the current position.
+        """
+
+        request = ReverseContinueRequest(before=self.get_current_position())
+        self.execute_request(request)
+
     def __enter__(self):
         self.counter.backup()
         self.setup_snapshot()
@@ -416,12 +479,8 @@ class DejaView:
                             event = yield
                             # TODO optimize?
                             counts = self.get_current_position()
-                            if request.to == counts:
+                            if request.to is None or request.to == counts:
                                 self.counter.allow_breakpoints = True
-                                # print(
-                                #     "enter breakpoint after stepping back to count",
-                                #     state.to_count,
-                                # )
                                 self.counter.breakpoint(event.frame)
                                 break
 
@@ -429,6 +488,9 @@ class DejaView:
                     # command can hand control back to root.
                     while True:
                         event = yield
+                        if event.event != "line":
+                            continue
+
                         counts = self.get_current_position()
                         if counts == arg.head:
                             self.replay_head_reached = True
@@ -446,6 +508,31 @@ class DejaView:
                                 self.forward_request_to_root(ContinueRequest())
                                 assert_never()
                             break
+
+                self.counter.allow_breakpoints = False
+                self.counter.add_handler_generator(handler())
+            case ProbeBreakpointRequest():
+
+                def handler() -> Generator[None, Event, None]:
+                    with patching.SetPatchingMode(patching.PatchingMode.MUTED):
+                        pdb_instance = self.counter.get_pdb()
+                        last_breakpoint: CounterPosition | None = None
+
+                        while True:
+                            event = yield
+                            if event.event != "line":
+                                continue
+
+                            counts = self.get_current_position()
+                            if counts == request.before:
+                                target = last_breakpoint
+                                self.snapshot_manager.return_from_replay(
+                                    ResumeSnapshotReturn(LastBreakpointResult(target))
+                                )
+                                assert_never()
+
+                            if pdb_instance.break_here(event.frame):
+                                last_breakpoint = counts
 
                 self.counter.allow_breakpoints = False
                 self.counter.add_handler_generator(handler())
@@ -583,6 +670,13 @@ class DejaView:
             self.dejaview.step_back()
             debug_log("returned from step_back")
             return 1
+
+        def do_reverse_continue(self, arg: str):
+            self.dejaview.reverse_continue()
+            return 1
+
+        do_rcontinue = do_reverse_continue
+        do_rc = do_reverse_continue
 
         def onecmd(self, line):
             stop = super().onecmd(line)
