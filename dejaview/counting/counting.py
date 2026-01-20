@@ -179,6 +179,13 @@ class FrameCounter:
             super().__init__()
             self.counter = counter
 
+        @typing.override
+        def trace_dispatch(self, frame, event, arg):
+            # When breakpoint pauses are disallowed (e.g. probing for last breakpoint),
+            # skip all debugger work
+            if self.counter.allow_breakpoints:
+                return super().trace_dispatch(frame, event, arg)
+
         def do_count(self, arg: str):
             for frame in self.counter.stack:
                 print(frame.count, frame.frame)

@@ -1,20 +1,7 @@
-import time
-
-
-def test():
-    bar = time.time()
-
-    def foo(x):
-        print(4)
-        print(5)
-
-    print(1, bar)
-    breakpoint()
-    print(2)
-    foo(3)
-    print(3)
-    time.sleep(1)
-
-
-if __name__ == "__main__":
-    test()
+a = 1234      # Line 1
+def foo():    # Line 2
+    print(a)  # Line 3
+    print(a)  # Line 4
+print(a)      # Line 5
+foo()         # Line 6
+print(a)      # Line 7
