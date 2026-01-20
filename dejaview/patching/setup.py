@@ -1,4 +1,5 @@
 import builtins
+import os
 import random
 import socket
 import time
@@ -28,6 +29,7 @@ def setup_patching():
     p.patch(socket.socket, "sendto")
     p.patch(socket, "socket")
     p.patch(builtins, "input")
+    p.patch(os, "getpid")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
     return p
 

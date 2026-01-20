@@ -8,7 +8,7 @@ dependencies = []
 
 [tool.pytest.ini_options]
 testpaths = ["dejaview"]
-addopts = "-n auto --dist=loadfile"
+# addopts = "-n auto --dist=loadfile"
 
 [dependency-groups]
 dev = [

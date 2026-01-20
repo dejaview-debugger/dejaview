@@ -1,8 +1,20 @@
+import bdb
 import os
 import sys
 import traceback
+import types
 from dataclasses import dataclass
-from typing import Any, Generator, List, Optional, TextIO, cast
+from typing import (
+    Any,
+    Dict,
+    Generator,
+    List,
+    NoReturn,
+    Optional,
+    TextIO,
+    assert_never,
+    cast,
+)
 
 from dejaview.counting.counting import Event, FrameCounter
 from dejaview.counting.socket_client import DebugSocketClient
@@ -15,10 +27,10 @@ from dejaview.snapshots.snapshots import SnapshotManager
 DEBUG = False
 
 
-def debug_log(message: str) -> None:
+def debug_log(*args: Any) -> None:
     """Print debug messages to stderr if DEBUG is enabled."""
     if DEBUG:
-        print(message, file=sys.stderr, flush=True)
+        print(*args, file=sys.stderr, flush=True)
 
 
 class _SafeStdin:
@@ -38,19 +50,134 @@ class _SafeStdin:
 
 
 @dataclass
-class State:
-    to_counts: List[int]
+class CounterPosition:
+    counts: List[int]
+
+    def decrement(self) -> None:
+        """
+        Decrement the counter position by one step.
+        """
+        if self.counts[-1] == 0:
+            self.counts.pop()
+        else:
+            self.counts[-1] -= 1
+
+
+@dataclass
+class BreakpointState:
+    """Serializable snapshot of a single breakpoint."""
+
+    number: int
+    file: str
+    line: int
+    cond: str | None
+    funcname: str | None
+    enabled: bool
+    temporary: bool
+    hits: int
+    ignore: int
+
+
+@dataclass
+class DebuggerStopInfo:
+    stoplineno: int
+    stop_index: int | None  # index into FrameCounter.stack, -1 for botframe
+    return_index: int | None  # index into FrameCounter.stack, -1 for botframe
+
+
+@dataclass
+class DebuggerState:
+    """Serializable snapshot of debugger state that must survive forks."""
+
+    breakpoints: List[BreakpointState]
+    next_breakpoint_id: int
+    breaks: Dict[str, List[int]]
+    commands: Dict[int, List[str]]
+    stop_info: DebuggerStopInfo | None
+
+
+@dataclass
+class ReverseToTargetRequest:
+    """
+    Reverse to the given counter position.
+    """
+
+    to: CounterPosition
+
+
+@dataclass
+class ProbeBreakpointRequest:
+    """
+    Find the last breakpoint before the given position.
+    """
+
+    before: CounterPosition
+
+
+@dataclass
+class ReverseContinueRequest:
+    """
+    Go to last breakpoint before the given position.
+    """
+
+    before: CounterPosition
+
+
+@dataclass
+class ContinueRequest:
+    pass
+
+
+@dataclass
+class QuitRequest:
+    pass
+
+
+RequestForReplay = ReverseToTargetRequest | ProbeBreakpointRequest
+RequestForRootOnly = ContinueRequest | ReverseContinueRequest | QuitRequest
+RequestForRoot = RequestForReplay | RequestForRootOnly
+
+
+@dataclass
+class LastBreakpointResult:
+    to_counts: CounterPosition
+
+
+# Is a return value, not an action
+ValueResult = LastBreakpointResult
+
+
+@dataclass
+class NextActionResult:
+    request: RequestForRoot
+    debugger_state: DebuggerState
+
+
+@dataclass
+class ResumeSnapshotArg:
     function_states: Any
     """Should be equivalent to get_type_hints(StateStore.serialize()).get('return')"""
-    # TODO: add debugger state
+
+    head: CounterPosition  # the current position of the root process
+    debugger_state: DebuggerState
+
+    request: RequestForReplay
+
+
+@dataclass
+class ResumeSnapshotReturn:
+    result: ValueResult | NextActionResult
 
 
 class DejaView:
     def __init__(self, socket_client: Optional[DebugSocketClient] = None):
         self.counter = FrameCounter()
-        self.snapshot_manager = SnapshotManager()
+        self.snapshot_manager = SnapshotManager[
+            ResumeSnapshotArg, ResumeSnapshotReturn
+        ]()
         self.socket_client = socket_client
         self.counter.pdb_factory = lambda: self.CustomPdb(self)
+        self.replay_head_reached = False
         self.pending_breakpoints: list[str] = []  # Store breakpoints until pdb is ready
         # self.counter.add_handler(print_handler)
 
@@ -76,14 +203,191 @@ class DejaView:
             else:
                 debug_log(f"[DejaView] Pdb not ready, ignoring command: {command}")
 
-    def step_back(self):
+    def execute_request_for_replay(
+        self, request: RequestForReplay
+    ) -> ResumeSnapshotReturn:
+        """
+        Execute a request in a new replay process and return the result.
+        """
+        assert not self.snapshot_manager.is_replay_process, (
+            "cannot be called in replay process"
+        )
+        arg = ResumeSnapshotArg(
+            function_states=StateStore.serialize(),
+            head=self.get_current_position(),
+            debugger_state=self.serialize_debugger_state(include_stopinfo=False),
+            request=request,
+        )
+        return self.snapshot_manager.resume_snapshot(arg)
+
+    def execute_request_with_return(self, request: RequestForReplay) -> ValueResult:
+        ret = self.execute_request_for_replay(request)
+        result = ret.result
+        assert isinstance(result, ValueResult)
+        return result
+
+    def forward_request_to_root(self, request: RequestForRoot) -> NoReturn:
+        """
+        Execute a request in the root process.
+        """
+        assert self.snapshot_manager.is_replay_process, (
+            "can only be called in replay process"
+        )
+        self.snapshot_manager.return_from_replay(
+            ResumeSnapshotReturn(
+                NextActionResult(request, self.serialize_debugger_state())
+            )
+        )
+
+    def execute_request(self, request: RequestForRoot):
+        debug_log(f"execute_request, {request=}")
+
+        if self.snapshot_manager.is_replay_process:
+            self.forward_request_to_root(request)
+            assert_never()
+
+        while True:
+            if isinstance(request, RequestForReplay):
+                ret = self.execute_request_for_replay(request)
+                assert isinstance(ret.result, NextActionResult)
+                self.apply_debugger_state(ret.result.debugger_state)
+                request = ret.result.request
+                continue
+            elif isinstance(request, QuitRequest):
+                pdb_instance = self.get_pdb()
+                pdb_instance.do_quit("")
+                return
+            elif isinstance(request, ContinueRequest):
+                return
+            else:
+                raise NotImplementedError(
+                    f"Unimplemented request type: {type(request)}"
+                )
+
+    def get_current_position(self) -> CounterPosition:
         counts = [frame.count for frame in self.counter.stack]
-        if counts[-1] == 0:
-            counts.pop()
+        return CounterPosition(counts)
+
+    def serialize_debugger_state(self, include_stopinfo: bool = True) -> DebuggerState:
+        pdb_instance = self.get_pdb()
+
+        def frame_to_index(frame: Any, botframe: Any) -> int | None:
+            if frame is None:
+                return None
+            for idx, sf in enumerate(self.counter.stack):
+                if sf.frame is frame:
+                    return idx
+            if frame is botframe:
+                return -1
+            raise ValueError("Frame not found in FrameCounter stack")
+
+        serialized_breakpoints: List[BreakpointState] = []
+        for bp in bdb.Breakpoint.bpbynumber:
+            if bp is None:
+                continue
+            serialized_breakpoints.append(
+                BreakpointState(
+                    number=bp.number,
+                    file=bp.file,
+                    line=bp.line,
+                    cond=bp.cond,
+                    funcname=bp.funcname,
+                    enabled=bp.enabled,
+                    temporary=bp.temporary,
+                    hits=bp.hits,
+                    ignore=bp.ignore,
+                )
+            )
+
+        breaks = {
+            filename: list(lines) for filename, lines in pdb_instance.breaks.items()
+        }
+        commands = {num: list(cmds) for num, cmds in pdb_instance.commands.items()}
+        stop_info: DebuggerStopInfo | None
+        if include_stopinfo:
+            botframe = getattr(pdb_instance, "botframe", None)
+            stop_info = DebuggerStopInfo(
+                stoplineno=getattr(pdb_instance, "stoplineno", -1),
+                stop_index=frame_to_index(
+                    getattr(pdb_instance, "stopframe", None), botframe
+                ),
+                return_index=frame_to_index(
+                    getattr(pdb_instance, "returnframe", None), botframe
+                ),
+            )
         else:
-            counts[-1] -= 1
-        state = State(counts, StateStore.serialize())
-        self.snapshot_manager.resume_snapshot(state)
+            stop_info = None
+
+        return DebuggerState(
+            breakpoints=serialized_breakpoints,
+            next_breakpoint_id=bdb.Breakpoint.next,
+            breaks=breaks,
+            commands=commands,
+            stop_info=stop_info,
+        )
+
+    def apply_debugger_state(self, state: DebuggerState) -> None:
+        """Apply a serialized debugger state to the current debugger."""
+        pdb_instance = self.get_pdb()
+
+        # debug_log(f"applying debugger state, {state=}")
+
+        def index_to_frame(idx: int | None, botframe: Any) -> types.FrameType | None:
+            if idx is None:
+                return None
+            if idx == -1:
+                return botframe
+            if idx < 0 or idx >= len(self.counter.stack):
+                raise ValueError(
+                    "Debugger state refers to frame index "
+                    f"{idx} but stack depth is {len(self.counter.stack)}"
+                )
+            return self.counter.stack[idx].frame
+
+        # Clear any stale breakpoint data before applying the snapshot.
+        bdb.Breakpoint.bpbynumber = [None]
+        bdb.Breakpoint.bplist = {}
+        bdb.Breakpoint.next = 1
+        pdb_instance.breaks = {}
+        pdb_instance.commands = {}
+
+        # Recreate breakpoints with their original numbers.
+        for bp_state in sorted(state.breakpoints, key=lambda bp: bp.number):
+            bdb.Breakpoint.next = bp_state.number
+            bp = bdb.Breakpoint(
+                bp_state.file,
+                bp_state.line,
+                bp_state.temporary,
+                bp_state.cond,
+                bp_state.funcname,
+            )
+            bp.enabled = bp_state.enabled
+            bp.hits = bp_state.hits
+            bp.ignore = bp_state.ignore
+
+        bdb.Breakpoint.next = state.next_breakpoint_id
+        pdb_instance.breaks = {
+            filename: list(lines) for filename, lines in state.breaks.items()
+        }
+        pdb_instance.commands = {
+            num: list(cmds) for num, cmds in state.commands.items()
+        }
+
+        # Restore stop info using live frames derived from saved indices.
+        if state.stop_info is not None:
+            botframe = getattr(pdb_instance, "botframe", None)
+            stopframe = index_to_frame(state.stop_info.stop_index, botframe)
+            returnframe = index_to_frame(state.stop_info.return_index, botframe)
+
+            pdb_instance._set_stopinfo(
+                stopframe, returnframe, state.stop_info.stoplineno
+            )
+
+    def step_back(self):
+        pos = self.get_current_position()
+        pos.decrement()
+        request = ReverseToTargetRequest(to=pos)
+        self.execute_request(request)
 
     def __enter__(self):
         self.counter.backup()
@@ -94,29 +398,61 @@ class DejaView:
 
     def setup_snapshot(self) -> None:
         # capture snapshot
-        state: State = self.snapshot_manager.capture_snapshot()
-        if state is not None:  # if we're resuming from a snapshot
-            # add handler to enter debugger at to_count
-            def handler() -> Generator[None, Event, None]:
-                with patching.SetPatchingMode(patching.PatchingMode.MUTED):
+        arg: ResumeSnapshotArg | None = self.snapshot_manager.capture_snapshot()
+        if arg is None:  # we're the root process
+            return
+
+        assert self.snapshot_manager.is_replay_process
+        debug_log(f"got arg {arg=}, {os.getpid()=}")
+        # we're a replay process
+        self.replay_head_reached = False
+        request = arg.request
+        match request:
+            case ReverseToTargetRequest():
+                # add handler to enter debugger at to_count
+                def handler() -> Generator[None, Event, None]:
+                    with patching.SetPatchingMode(patching.PatchingMode.MUTED):
+                        while True:
+                            event = yield
+                            # TODO optimize?
+                            counts = self.get_current_position()
+                            if request.to == counts:
+                                self.counter.allow_breakpoints = True
+                                # print(
+                                #     "enter breakpoint after stepping back to count",
+                                #     state.to_count,
+                                # )
+                                self.counter.breakpoint(event.frame)
+                                break
+
+                    # Track when we reach the recorded head so the next continue-like
+                    # command can hand control back to root.
                     while True:
                         event = yield
-                        # TODO optimize
-                        counts = [frame.count for frame in event.stack]
-                        if state.to_counts == counts:
-                            self.counter.allow_breakpoints = True
-                            # print(
-                            #     "enter breakpoint after stepping back to count",
-                            #     state.to_count,
-                            # )
-                            self.counter.breakpoint(event.frame)
+                        counts = self.get_current_position()
+                        if counts == arg.head:
+                            self.replay_head_reached = True
+                            pdb_instance = self.counter.get_pdb()
+                            # If pdb would not stop here, immediately hand
+                            # control back to root before executing past head.
+                            would_stop = pdb_instance.break_here(event.frame) or (
+                                pdb_instance.stop_here(event.frame)
+                            )
+                            debug_log(
+                                "reached head in replay process, "
+                                f"would_stop={would_stop}"
+                            )
+                            if not would_stop:
+                                self.forward_request_to_root(ContinueRequest())
+                                assert_never()
                             break
 
-            self.counter.allow_breakpoints = False
-            self.counter.add_handler_generator(handler())
+                self.counter.allow_breakpoints = False
+                self.counter.add_handler_generator(handler())
 
-            # set function state stores
-            StateStore.deserialize(state.function_states)
+        # set function state stores
+        StateStore.deserialize(arg.function_states)
+        self.apply_debugger_state(arg.debugger_state)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.patches.__exit__(exc_type, exc_val, exc_tb)
@@ -244,8 +580,27 @@ class DejaView:
                         debug_log(f"[PDB] Failed to write to pipe: {e}")
 
         def do_back(self, arg: str):
-            self.quitting = True
             self.dejaview.step_back()
+            debug_log("returned from step_back")
+            return 1
+
+        def onecmd(self, line):
+            stop = super().onecmd(line)
+            if (
+                self.dejaview.snapshot_manager.is_replay_process
+                and self.dejaview.replay_head_reached
+                and stop
+            ):
+                debug_log("at head in replay after command, handing back to root")
+                # We are at head in replay and user asked to continue/step; hand back.
+                self.dejaview.forward_request_to_root(ContinueRequest())
+            return stop
+
+        def set_quit(self):
+            if self.dejaview.snapshot_manager.is_replay_process:
+                self.dejaview.forward_request_to_root(QuitRequest())
+            else:
+                super().set_quit()
 
         def stop_here(self, frame):
             return self.counter.allow_breakpoints and super().stop_here(frame)

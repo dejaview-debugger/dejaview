@@ -95,6 +95,7 @@ def main():
             # In most cases SystemExit does not warrant a post-mortem session.
             print("The program exited via sys.exit(). Exit status:", end=" ")
             print(e)
+            raise
         except SyntaxError:
             traceback.print_exc()
             sys.exit(1)
