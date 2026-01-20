@@ -1,5 +1,6 @@
 import bdb
 import os
+import pdb
 import sys
 import traceback
 import types
@@ -452,6 +453,14 @@ class DejaView:
         request = ReverseContinueRequest(before=self.get_current_position())
         self.execute_request(request)
 
+    def restart(self):
+        """
+        Restart the debugging session from the beginning.
+        """
+
+        request = ReverseToTargetRequest(to=None)
+        self.execute_request(request)
+
     def __enter__(self):
         self.counter.backup()
         self.setup_snapshot()
@@ -667,16 +676,38 @@ class DejaView:
                         debug_log(f"[PDB] Failed to write to pipe: {e}")
 
         def do_back(self, arg: str):
+            """back
+
+            Rewind the execution by one step.
+            """
             self.dejaview.step_back()
             debug_log("returned from step_back")
             return 1
 
         def do_reverse_continue(self, arg: str):
+            """reverse_continue
+
+            Continue execution in reverse until a breakpoint is hit.
+            "rc" and "rcontinue" are aliases for "reverse_continue".
+            """
             self.dejaview.reverse_continue()
             return 1
 
+        def do_run(self, arg):
+            """run
+
+            Rewind the program to the beginning.
+            History, breakpoints, actions and debugger options
+            are preserved.  "restart" is an alias for "run".
+            """
+            if arg:
+                self.error("DejaView's run command does not take arguments")
+                return 0
+            raise pdb.Restart
+
         do_rcontinue = do_reverse_continue
         do_rc = do_reverse_continue
+        do_restart = do_run
 
         def onecmd(self, line):
             stop = super().onecmd(line)
