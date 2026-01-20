@@ -57,7 +57,7 @@ def launch_dejaview(program: str, timeout: float = 10) -> DejaViewInstance:
     tmpfile = tempfile.NamedTemporaryFile(
         suffix=".py", delete=False, delete_on_close=True
     )
-    tmpfile.write(dedent(program).encode("utf-8"))
+    tmpfile.write(dedent(program).strip().encode("utf-8"))
     tmpfile.flush()
     tmpfile.seek(0)
     command = [

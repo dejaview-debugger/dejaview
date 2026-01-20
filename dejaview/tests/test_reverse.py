@@ -1,6 +1,8 @@
 import re
 import time
 
+import pytest
+
 from dejaview.tests.util import launch_dejaview
 
 
@@ -86,3 +88,67 @@ def test_extend_head():
     out = d.expect_prompt()
     assert "Line 5" in out
     assert time2 == get_time(out)
+
+    d.quit()
+
+
+def test_pid():
+    d = launch_dejaview(
+        """
+        import os                   # Line 1
+        pid1 = os.getpid()          # Line 2
+        assert pid1 == os.getpid()  # Line 3
+        """
+    )
+
+    assert "Line 1" in d.expect_prompt()
+    d.sendline("n")
+    assert "Line 2" in d.expect_prompt()
+    d.sendline("n")
+    assert "Line 3" in d.expect_prompt()
+    d.sendline("back")
+    assert "Line 2" in d.expect_prompt()
+    d.sendline("c")
+    assert "AssertionError" not in d.expect_prompt()
+    d.quit()
+
+
+@pytest.mark.xfail(reason="reverse continue not yet supported")
+def test_reverse_continue():
+    d = launch_dejaview(
+        """
+        print()              # Line 1
+        print("hit")         # Line 2
+        print()              # Line 3
+        print("after hit")   # Line 4
+        print("end")         # Line 5
+        """
+    )
+
+    assert "Line 1" in d.expect_prompt()
+
+    d.sendline("b 4")
+    out = d.expect_prompt()
+    assert "Breakpoint" in out
+
+    d.sendline("c")
+    out = d.expect_prompt()
+    assert "Line 4" in out
+
+    d.sendline("b 2")
+    out = d.expect_prompt()
+    assert "Breakpoint" in out
+
+    d.sendline("rc")
+    out = d.expect_prompt()
+    assert "Line 2" in out
+
+    d.sendline("c")
+    out = d.expect_prompt()
+    assert "Line 4" in out
+
+    d.sendline("c")
+    out = d.expect_prompt()
+    assert "Line 5" in out
+
+    d.quit()
