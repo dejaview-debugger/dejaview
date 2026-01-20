@@ -80,11 +80,17 @@ def main():
 
     dejaview = DejaView(socket_client=socket_client)
     dejaview.counter.pdb_factory = lambda: CustomPdb(dejaview)
-    my_pdb = dejaview.get_pdb()
+    my_pdb: CustomPdb = dejaview.get_pdb()
     my_pdb.rcLines.extend(commands)
+    is_initial = True
     while True:
         try:
-            my_pdb._run(target)
+            # Instead of actually restarting, we just rewind to the beginning.
+            if is_initial:
+                is_initial = False
+                my_pdb._run(target)
+            else:
+                dejaview.restart()
             if my_pdb._user_requested_quit:
                 break
             print("The program finished and will be restarted")

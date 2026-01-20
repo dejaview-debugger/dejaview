@@ -262,3 +262,41 @@ def test_extend_head_until():
     out = d.expect_prompt()
     assert "Line 5" in out
     assert out.count("1234") == 3
+
+
+def test_finish():
+    d = launch_dejaview(
+        """
+        print()         # Line 1
+        print()         # Line 2
+        """
+    )
+    assert "Line 1" in d.expect_prompt()
+    d.sendline("c")
+    output = d.expect_prompt()
+    assert "The program finished and will be restarted" in output
+    assert "Line 1" in output
+    d.sendline("n")
+    assert "Line 2" in d.expect_prompt()
+    d.sendline("back")
+    assert "Line 1" in d.expect_prompt()
+    d.quit()
+
+
+def test_restart():
+    d = launch_dejaview(
+        """
+        print()         # Line 1
+        print()         # Line 2
+        """
+    )
+    assert "Line 1" in d.expect_prompt()
+    d.sendline("n")
+    assert "Line 2" in d.expect_prompt()
+    d.sendline("restart")
+    assert "Line 1" in d.expect_prompt()
+    d.sendline("n")
+    assert "Line 2" in d.expect_prompt()
+    d.sendline("back")
+    assert "Line 1" in d.expect_prompt()
+    d.quit()
