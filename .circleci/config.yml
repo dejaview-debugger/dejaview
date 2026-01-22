@@ -49,6 +49,17 @@ jobs:
         name: Run pytest
         command: uv run pytest
     - run:
+        name: Install Node.js, npm, and Xvfb
+        command: |
+          apt-get update && \
+          apt-get install -y nodejs npm xvfb libgtk-3-0 libxss1 libasound2 libnss3 libx11-xcb1 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libxrandr2 libxkbcommon0 libxshmfence1 libgbm1 libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libatspi2.0-0 libdrm2 libxinerama1 libxss1 libxext6 libxfixes3
+    - run:
+        name: Run VSCode Extension Tests (headless)
+        command: |
+          cd dejaview-extension
+          npm install
+          xvfb-run --auto-servernum --server-args='-screen 0 1920x1080x24' npm test
+    - run:
         name: Prune UV cache
         when: always
         command: uv cache prune --ci
