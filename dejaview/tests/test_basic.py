@@ -36,11 +36,11 @@ def test_step():
         print()  # Line 3
         """
     )
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("n")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("n")
-    assert "Line 3" in d.expect_prompt()
+    d.assert_line_number(3)
     d.quit()
 
 
@@ -49,10 +49,10 @@ def test_breakpoint():
         """
         print()  # Line 1
         breakpoint()
-        print()  # Line 2
+        print()  # Line 3
         """
     )
-    d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("c")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(3)
     d.quit()

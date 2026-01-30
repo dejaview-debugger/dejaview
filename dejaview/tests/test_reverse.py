@@ -1,7 +1,7 @@
 import re
 import time
 
-from dejaview.tests.util import launch_dejaview
+from dejaview.tests.util import DebugCommand, PropertyTester, launch_dejaview
 
 
 def test_reverse_step():
@@ -12,17 +12,17 @@ def test_reverse_step():
         print()         # Line 3
         """
     )
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("n")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("n")
     assert "101" in d.expect_prompt()
     d.sendline("back")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("back")
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("n")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("n")
     assert "101" in d.expect_prompt()
     d.quit()
@@ -47,44 +47,39 @@ def test_extend_head():
         return float(match[1])
 
     # run to line 3
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("n")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("n")
-    assert "Line 3" in d.expect_prompt()
+    d.assert_line_number(3)
     d.sendline("n")
-    out = d.expect_prompt()
-    assert "Line 4" in out
+    out = d.assert_line_number(4)
     time1 = get_time(out)
     assert time1 >= time0
 
     # rerun line 3
     d.sendline("back")
-    assert "Line 3" in d.expect_prompt()
+    d.assert_line_number(3)
     d.sendline("n")
-    out = d.expect_prompt()
-    assert "Line 4" in out
+    out = d.assert_line_number(4)
     assert time1 == get_time(out)
 
     # run line 4
     d.sendline("n")
-    out = d.expect_prompt()
-    assert "Line 5" in out
+    out = d.assert_line_number(5)
     time2 = get_time(out)
     assert time2 > time1
 
     # rerun lines 3 and 4
     d.sendline("back")
-    assert "Line 4" in d.expect_prompt()
+    d.assert_line_number(4)
     d.sendline("back")
-    assert "Line 3" in d.expect_prompt()
+    d.assert_line_number(3)
     d.sendline("n")
-    out = d.expect_prompt()
-    assert "Line 4" in out
+    out = d.assert_line_number(4)
     assert time1 == get_time(out)
     d.sendline("n")
-    out = d.expect_prompt()
-    assert "Line 5" in out
+    out = d.assert_line_number(5)
     assert time2 == get_time(out)
 
     d.quit()
@@ -99,13 +94,13 @@ def test_pid():
         """
     )
 
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("n")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("n")
-    assert "Line 3" in d.expect_prompt()
+    d.assert_line_number(3)
     d.sendline("back")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("c")
     assert "AssertionError" not in d.expect_prompt()
     d.quit()
@@ -122,35 +117,30 @@ def test_reverse_continue():
         """
     )
 
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
 
     d.sendline("b 4")
     out = d.expect_prompt()
     assert "Breakpoint" in out
 
     d.sendline("c")
-    out = d.expect_prompt()
-    assert "Line 4" in out
+    d.assert_line_number(4)
 
     d.sendline("b 2")
     out = d.expect_prompt()
     assert "Breakpoint" in out
 
     d.sendline("rc")
-    out = d.expect_prompt()
-    assert "Line 2" in out
+    d.assert_line_number(2)
 
     d.sendline("c")
-    out = d.expect_prompt()
-    assert "Line 4" in out
+    d.assert_line_number(4)
 
     d.sendline("n")
-    out = d.expect_prompt()
-    assert "Line 5" in out
+    d.assert_line_number(5)
 
     d.sendline("rc")
-    out = d.expect_prompt()
-    assert "Line 4" in out
+    d.assert_line_number(4)
 
     d.quit()
 
@@ -167,19 +157,19 @@ def test_rc_function():
         """
     )
 
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("b 4")
     d.expect_prompt()
     d.sendline("b 6")
     d.expect_prompt()
     d.sendline("c")
-    assert "Line 4" in d.expect_prompt()
+    d.assert_line_number(4)
     d.sendline("c")
-    assert "Line 6" in d.expect_prompt()
+    d.assert_line_number(6)
     d.sendline("rc")
-    assert "Line 4" in d.expect_prompt()
+    d.assert_line_number(4)
     d.sendline("c")
-    assert "Line 6" in d.expect_prompt()
+    d.assert_line_number(6)
     d.quit()
 
 
@@ -195,20 +185,19 @@ def test_extend_head_step_over():
         print(a)      # Line 7
         """
     )
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("b 4")
     d.expect_prompt()
     d.sendline("c")
-    assert "Line 4" in d.expect_prompt()
+    d.assert_line_number(4)
     d.sendline("b 6")
     d.expect_prompt()
     d.sendline("rc")
-    assert "Line 6" in d.expect_prompt()
+    d.assert_line_number(6)
     d.sendline("clear 1 2")
     d.expect_prompt()
     d.sendline("n")  # step over
-    out = d.expect_prompt()
-    assert "Line 7" in out
+    out = d.assert_line_number(7)
     assert out.count("1234") == 2
 
 
@@ -224,13 +213,13 @@ def test_extend_head_step_out():
         print(a)      # Line 7
         """
     )
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("b 4")
     d.expect_prompt()
     d.sendline("c")
-    assert "Line 4" in d.expect_prompt()
+    d.assert_line_number(4)
     d.sendline("back")
-    assert "Line 3" in d.expect_prompt()
+    d.assert_line_number(3)
     d.sendline("clear 1")
     d.expect_prompt()
     d.sendline("return")  # step out
@@ -249,18 +238,17 @@ def test_extend_head_until():
         print(a)      # Line 5
         """
     )
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("b 3")
     d.expect_prompt()
     d.sendline("c")
-    assert "Line 3" in d.expect_prompt()
+    d.assert_line_number(3)
     d.sendline("back")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("clear 1")
     d.expect_prompt()
     d.sendline("until 5")  # step until
-    out = d.expect_prompt()
-    assert "Line 5" in out
+    out = d.assert_line_number(5)
     assert out.count("1234") == 3
 
 
@@ -271,15 +259,14 @@ def test_finish():
         print()         # Line 2
         """
     )
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("c")
-    output = d.expect_prompt()
+    output = d.assert_line_number(1)
     assert "The program finished and will be restarted" in output
-    assert "Line 1" in output
     d.sendline("n")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("back")
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.quit()
 
 
@@ -290,13 +277,79 @@ def test_restart():
         print()         # Line 2
         """
     )
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("n")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("restart")
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
     d.sendline("n")
-    assert "Line 2" in d.expect_prompt()
+    d.assert_line_number(2)
     d.sendline("back")
-    assert "Line 1" in d.expect_prompt()
+    d.assert_line_number(1)
+    d.quit()
+
+
+def test_random_determinism_control_flow():
+    program = """
+        import random
+        random.seed(0)
+        result = []
+        for _ in range(5):
+            value = random.random()
+            # Modify control flow to test state
+            if value > 0.5:
+                result.append(0)
+            else:
+                result.append(1)
+            print(value)
+        """
+    sequence = [DebugCommand.STEP for _ in range(23)]
+    reverse_seq = [DebugCommand.BACK for _ in range(23)]
+    commands = sequence + reverse_seq
+
+    PropertyTester.test_determinism_property(program, commands)
+
+
+def test_random_idempotence():
+    # Similar test to test_random_determinism_control_flow,
+    # which verifies random is idempotent when replaying.
+    d = launch_dejaview(
+        """
+        import random
+        import time
+        random.seed()
+        results = []
+        for i in range(5):
+            value = random.random()
+            timestamp = time.time()
+            print(timestamp)
+            print(value)
+        total = len(results)
+        """
+    )
+
+    # Start at line 1
+    d.assert_line_number(1)
+
+    # Step through initialization
+    d.sendline("n")  # line 2
+    d.expect_prompt()
+    d.sendline("n")  # line 3
+    d.expect_prompt()
+    d.sendline("n")  # line 4
+    d.expect_prompt()
+
+    # Now we're at line 5, about to enter the loop
+    # Test idempotence through several iterations of the loop
+    PropertyTester.test_idempotence_property(d, forward_steps=8)
+
+    # Move forward into the middle of the loop
+    for _ in range(12):
+        d.sendline("n")
+        d.expect_prompt()
+
+    # Test idempotence again from a different point
+    # This should replay the same random values and timestamps
+    PropertyTester.test_idempotence_property(d, forward_steps=5)
+
     d.quit()
