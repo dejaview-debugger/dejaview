@@ -61,17 +61,29 @@ export class PythonDebugAdapter extends LoggingDebugSession {
   protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
     const filePath = args.source.path!;
     const breakpoints = args.breakpoints || [];
-    const breakpoint_lines = breakpoints.map((bp) => bp.line);
+    const newBreakpointLines = breakpoints.map((bp) => bp.line);
+    const previousBreakpointLines = this.breakpoints[filePath] || [];
 
-    // Set new breakpoints
-    breakpoint_lines.forEach((line) => {
-      const breakCommand = `break ${filePath}:${line}`;
-      this.debugLog(`Setting breakpoint: ${breakCommand}`);
-      this.sendCommand(breakCommand);
+    // Clear breakpoints that are no longer present
+    previousBreakpointLines.forEach((line) => {
+      if (!newBreakpointLines.includes(line)) {
+        const clearCommand = `clear ${filePath}:${line}`;
+        this.debugLog(`Clearing breakpoint: ${clearCommand}`);
+        this.sendCommand(clearCommand);
+      }
+    });
+
+    // Set new breakpoints (only ones that weren't already set)
+    newBreakpointLines.forEach((line) => {
+      if (!previousBreakpointLines.includes(line)) {
+        const breakCommand = `break ${filePath}:${line}`;
+        this.debugLog(`Setting breakpoint: ${breakCommand}`);
+        this.sendCommand(breakCommand);
+      }
     });
 
     // Update internal breakpoint state
-    this.breakpoints[filePath] = breakpoint_lines;
+    this.breakpoints[filePath] = newBreakpointLines;
 
     // Respond to VSCode with the updated breakpoints
     response.body = {

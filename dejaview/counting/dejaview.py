@@ -234,17 +234,12 @@ class DejaView:
         # Queue breakpoint commands until pdb is ready
         if command.startswith("break "):
             break_arg = command[6:]  # Remove "break " prefix
-            debug_log(f"[DejaView] Queueing breakpoint: {break_arg}")
+            debug_log(f"[DejaView] Processing breakpoint: {break_arg}")
             if self.pdb and self.pdb.is_initialized:
-                debug_log(f"[DejaView] Pdb is ready, setting breakpoint: {break_arg}")
-                try:
-                    self.pdb.do_break(break_arg)
-                except Exception as e:
-                    debug_log(
-                        f"[DejaView] Failed to set breakpoint immediately: "
-                        f"{e}\n{traceback.format_exc()}"
-                    )
+                # Forward to pdb's handler which has duplicate checking
+                self.pdb._handle_socket_command(command)
             else:
+                debug_log(f"[DejaView] Pdb not ready, queueing breakpoint: {break_arg}")
                 self.pending_breakpoints.append(break_arg)
         else:
             # For other commands, try to pass to pdb if it exists
@@ -401,14 +396,25 @@ class DejaView:
             return self.counter.stack[idx].frame
 
         # Clear any stale breakpoint data before applying the snapshot.
-        bdb.Breakpoint.bpbynumber = [None]
-        bdb.Breakpoint.bplist = {}
+        # Also clear in-place to preserve references held by pdb cmdloop
+        bdb.Breakpoint.bpbynumber.clear()
+        bdb.Breakpoint.bpbynumber.append(None)
+        bdb.Breakpoint.bplist.clear()
         bdb.Breakpoint.next = 1
-        pdb_instance.breaks = {}
-        pdb_instance.commands = {}
+        pdb_instance.breaks.clear()
+        pdb_instance.commands.clear()
 
         # Recreate breakpoints with their original numbers.
+        # bdb.Breakpoint.__init__ sets bp.number = Breakpoint.next, then appends
+        # to bpbynumber.
+        # So for bp.number == index in bpbynumber, we need
+        # len(bpbynumber) == bp.number before creation.
         for bp_state in sorted(state.breakpoints, key=lambda bp: bp.number):
+            # Pad bpbynumber so that len(bpbynumber) == bp_state.number before creation
+            # This ensures the breakpoint will be at the correct index when appended
+            while len(bdb.Breakpoint.bpbynumber) < bp_state.number:
+                bdb.Breakpoint.bpbynumber.append(None)
+
             bdb.Breakpoint.next = bp_state.number
             bp = bdb.Breakpoint(
                 bp_state.file,
@@ -417,17 +423,25 @@ class DejaView:
                 bp_state.cond,
                 bp_state.funcname,
             )
+            # Now bp is at index bp_state.number in bpbynumber
+
             bp.enabled = bp_state.enabled
             bp.hits = bp_state.hits
             bp.ignore = bp_state.ignore
 
+        # Pad to ensure length accommodates next_breakpoint_id
+        # so that new breakpoints added later will be at the correct index
+        while len(bdb.Breakpoint.bpbynumber) < state.next_breakpoint_id:
+            bdb.Breakpoint.bpbynumber.append(None)
+
         bdb.Breakpoint.next = state.next_breakpoint_id
-        pdb_instance.breaks = {
-            filename: list(lines) for filename, lines in state.breaks.items()
-        }
-        pdb_instance.commands = {
-            num: list(cmds) for num, cmds in state.commands.items()
-        }
+        # Update in-place to preserve references
+        pdb_instance.breaks.update(
+            {filename: list(lines) for filename, lines in state.breaks.items()}
+        )
+        pdb_instance.commands.update(
+            {num: list(cmds) for num, cmds in state.commands.items()}
+        )
 
         # Restore stop info using live frames derived from saved indices.
         if state.stop_info is not None:
@@ -649,25 +663,9 @@ class DejaView:
                             f"Error executing where: {e}\n{traceback.format_exc()}"
                         )
                         self.socket_client.send_output(error_msg, "stderr")
-            elif command.startswith("break "):
-                try:
-                    # Extract the break argument (e.g., "file.py:line")
-                    break_arg = command[6:]  # Remove "break " prefix
-                    debug_log(f"[PDB] Setting breakpoint: {break_arg}")
-                    self.do_break(break_arg)
-                    debug_log(f"[PDB] Breakpoint set: {break_arg}")
-                except Exception as e:
-                    debug_log(
-                        f"[PDB] Failed to set breakpoint: {e}\n{traceback.format_exc()}"
-                    )
-                    if self.socket_client:
-                        error_msg = (
-                            f"Error setting breakpoint: {e}\n{traceback.format_exc()}"
-                        )
-                        self.socket_client.send_output(error_msg, "stderr")
             else:
-                # For control commands, write to the pipe
-                debug_log(f"[PDB] Writing control command to pipe: {command}")
+                # For control commands, breaks, and clears, we write to the pipe
+                debug_log(f"[PDB] Writing command to pipe: {command}")
                 if self.stdin_write_fd is not None:
                     try:
                         os.write(self.stdin_write_fd, (command + "\n").encode())
@@ -753,6 +751,20 @@ class DejaView:
                     )
                     for break_arg in self.dejaview.pending_breakpoints:
                         try:
+                            # Check if breakpoint already exists at this location
+                            if ":" in break_arg:
+                                file_path, line_str = break_arg.rsplit(":", 1)
+                                line_no = int(line_str)
+                                canonical = self.canonic(file_path)
+                                if (
+                                    canonical in self.breaks
+                                    and line_no in self.breaks[canonical]
+                                ):
+                                    debug_log(
+                                        f"[PDB] Pending breakpoint already exists at "
+                                        f"{canonical}:{line_no}, skipping"
+                                    )
+                                    continue
                             debug_log(f"[PDB] Setting pending breakpoint: {break_arg}")
                             self.do_break(break_arg)
                         except Exception as e:
