@@ -52,6 +52,9 @@ class FrameCounter:
         self.pdb: pdb.Pdb | None = None
         self.allow_breakpoints = True
 
+        # Callback for checkpoint capture - called on every line event
+        self._checkpoint_callback: typing.Callable[[int], None] | None = None
+
     def add_handler_generator(self, handler: typing.Generator[None, Event, None]):
         next(handler)
 
@@ -138,6 +141,10 @@ class FrameCounter:
             except bdb.BdbQuit:
                 # Propagate debugger quit so the outer loop can shut down cleanly
                 raise
+
+                    # Trigger checkpoint callback if registered
+                    if self._checkpoint_callback is not None:
+                        self._checkpoint_callback(self.count)
 
         return tracer
 

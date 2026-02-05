@@ -22,7 +22,11 @@ from dejaview.counting.socket_client import DebugSocketClient
 from dejaview.patching import patching
 from dejaview.patching.setup import setup_patching
 from dejaview.patching.state_store import StateStore
-from dejaview.snapshots.snapshots import SnapshotManager
+from dejaview.snapshots.snapshots import (
+    DEFAULT_CHECKPOINT_INTERVAL,
+    DEFAULT_MAX_CHECKPOINTS,
+    SnapshotManager,
+)
 
 # Debug mode flag - set to False to disable debug logging
 DEBUG = False
@@ -205,20 +209,83 @@ class ResumeSnapshotReturn:
 
 
 class DejaView:
-    def __init__(self, socket_client: Optional[DebugSocketClient] = None):
+    def __init__(
+        self,
+        socket_client: Optional[DebugSocketClient] = None,
+        checkpoint_interval: int = DEFAULT_CHECKPOINT_INTERVAL,
+        max_checkpoints: int = DEFAULT_MAX_CHECKPOINTS,
+    ):
         self.counter = FrameCounter()
         self.snapshot_manager = SnapshotManager[
             ResumeSnapshotArg, ResumeSnapshotReturn
-        ]()
+        ](
+            checkpoint_interval=checkpoint_interval,
+            max_checkpoints=max_checkpoints,
+        )
         self.socket_client = socket_client
         self.counter.pdb_factory = lambda: self.CustomPdb(self)
         self.replay_head_reached = False
         self.pending_breakpoints: list[str] = []  # Store breakpoints until pdb is ready
         # self.counter.add_handler(print_handler)
 
+        # Checkpoint management: track when a checkpoint should be captured
+        self._pending_checkpoint: bool = False
+        self._pending_checkpoint_count: int = 0
+
+        # Set up checkpoint callback to mark when checkpoints are needed
+        self.counter._checkpoint_callback = self._on_instruction
+
         # Set up command handler immediately if socket is available
         if self.socket_client and self.socket_client.connected:
             self.socket_client.set_command_handler(self._handle_socket_command)
+
+    def _on_instruction(self, count: int) -> None:
+        """Called on every line event to check if a checkpoint is needed.
+
+        Instead of capturing immediately (which would fork inside the tracer),
+        we mark that a checkpoint is pending. The actual capture happens at
+        safe points when the debugger pauses (e.g., user_line).
+        """
+        # Only mark checkpoints in root process during normal execution
+        if self.snapshot_manager.is_replay_process:
+            return
+
+        # Check if we've passed the checkpoint interval threshold
+        interval = self.snapshot_manager.checkpoint_interval
+        last_count = self.snapshot_manager._last_checkpoint_count
+
+        if count - last_count >= interval:
+            # Mark that we need to capture a checkpoint at the next safe point
+            self._pending_checkpoint = True
+            self._pending_checkpoint_count = count
+            debug_log(
+                f"DEBUG: marked pending checkpoint at count={count} "
+                f"(last was {last_count})"
+            )
+
+    def _maybe_capture_pending_checkpoint(self) -> bool:
+        """Capture a pending checkpoint if one is marked.
+
+        This should be called at safe points when the debugger is paused.
+        Returns True if a checkpoint was captured, False otherwise.
+        """
+        if not self._pending_checkpoint:
+            return False
+
+        if self.snapshot_manager.is_replay_process:
+            self._pending_checkpoint = False
+            return False
+
+        # Capture the checkpoint now that we're at a safe point
+        count = self._pending_checkpoint_count
+        self._pending_checkpoint = False
+        self._pending_checkpoint_count = 0
+
+        debug_log(f"DEBUG: capturing pending checkpoint at count={count}")
+        self.snapshot_manager.capture_snapshot(
+            instruction_count=count, is_automatic=True
+        )
+        return True
 
     @property
     def pdb(self) -> "DejaView.CustomPdb | None":
@@ -264,7 +331,23 @@ class DejaView:
             debugger_state=self.serialize_debugger_state(),
             request=request,
         )
-        return self.snapshot_manager.resume_snapshot(arg)
+
+        # Calculate target count for checkpoint selection
+        # We use the current global count as the upper bound for finding a checkpoint
+        # The actual target position may be earlier, but this ensures we don't
+        # resume from a checkpoint that's past our target
+        target_count: int | None = None
+        if isinstance(request, ReverseToTargetRequest):
+            if request.to is None:
+                target_count = 0  # Going to beginning
+            else:
+                # Use current count as upper bound - we're going backward from here
+                # The checkpoint finder will select the best one before this
+                target_count = self.counter.count
+        elif isinstance(request, ProbeBreakpointRequest):
+            target_count = self.counter.count
+
+        return self.snapshot_manager.resume_snapshot(arg, target_count=target_count)
 
     def execute_request_with_return(self, request: RequestForReplay) -> ValueResult:
         ret = self.execute_request_for_replay(request)
@@ -514,8 +597,10 @@ class DejaView:
                 break
 
     def setup_snapshot(self) -> None:
-        # capture snapshot
-        arg: ResumeSnapshotArg | None = self.snapshot_manager.capture_snapshot()
+        # capture initial snapshot at instruction count 0
+        arg: ResumeSnapshotArg | None = self.snapshot_manager.capture_snapshot(
+            instruction_count=0
+        )
         if arg is None:  # we're the root process
             return
 
@@ -767,6 +852,10 @@ class DejaView:
                 f"{self.curindex if hasattr(self, 'curindex') else 'Not set'}"
             )
 
+            # Safe point: capture any pending checkpoint now that debugger is paused
+            # This must happen BEFORE we block in cmdloop
+            self.dejaview._maybe_capture_pending_checkpoint()
+
             # Set pending breakpoints now that pdb is initialized
             if not self.is_initialized:
                 self.is_initialized = True
@@ -846,12 +935,18 @@ class DejaView:
 
         def user_return(self, frame, return_value):
             """Called when a return trap is set here."""
+            # Safe point: capture any pending checkpoint
+            self.dejaview._maybe_capture_pending_checkpoint()
+
             if self.socket_client and self.socket_client.connected:
                 self.socket_client.send_stopped("step")
             super().user_return(frame, return_value)
 
         def user_exception(self, frame, exc_info):
             """Called when we stop on an exception."""
+            # Safe point: capture any pending checkpoint
+            self.dejaview._maybe_capture_pending_checkpoint()
+
             if self.socket_client and self.socket_client.connected:
                 self.socket_client.send_stopped("exception")
             super().user_exception(frame, exc_info)
