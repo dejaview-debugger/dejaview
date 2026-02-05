@@ -105,6 +105,10 @@ class FrameCounter:
                 self.stack.append(StackFrame(frame, 0))
             elif event == "return":
                 self.stack.pop()
+            elif event == "line":
+                # Function call has count 0 and first line has count 1
+                self.count += 1
+                self.stack[-1].count += 1
 
             try:
                 # Call the user-defined handlers, remove the ones that return True
@@ -129,10 +133,6 @@ class FrameCounter:
             except bdb.BdbQuit:
                 # Propagate debugger quit so the outer loop can shut down cleanly
                 raise
-            finally:
-                if event == "line":
-                    self.count += 1
-                    self.stack[-1].count += 1
 
         return tracer
 

@@ -1,4 +1,6 @@
+import atexit
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -9,6 +11,15 @@ from textwrap import dedent
 from typing import List, Optional
 
 import pexpect  # type: ignore[import-untyped]
+
+_TEMP_DIRS: list[Path] = []
+
+
+# Clean up garbage at exit
+@atexit.register
+def _cleanup_temp_dirs() -> None:
+    for path in _TEMP_DIRS:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 class DebugCommand(Enum):
@@ -147,25 +158,34 @@ class DejaViewInstance(pexpect.spawn):
         return output
 
 
-def launch_dejaview(program: str, timeout: float = 10) -> DejaViewInstance:
+@dataclass
+class SourceFile:
+    name: str
+    content: str
+
+
+def launch_dejaview(
+    main: str | SourceFile, *rest: SourceFile, timeout: float = 10
+) -> DejaViewInstance:
     """
     Launch DejaView with the given program string.
     """
-    # Delete on close instead of scope exit
-    # since we don't know the lifetime of the DejaViewInstance
-    tmpfile = tempfile.NamedTemporaryFile(
-        suffix=".py", delete=False, delete_on_close=True
-    )
-    tmpfile.write(dedent(program).strip().encode("utf-8"))
-    tmpfile.flush()
-    tmpfile.seek(0)
+    if isinstance(main, str):
+        main = SourceFile("main.py", main)
+    files = [main, *rest]
+
+    tmpdir = Path(tempfile.mkdtemp())
+    _TEMP_DIRS.append(tmpdir)
+    for source_file in files:
+        path = tmpdir / source_file.name
+        path.write_text(dedent(source_file.content).strip(), encoding="utf-8")
     command = [
         "uv",
         "run",
         "python3",
         "-m",
         "dejaview",
-        tmpfile.name,
+        str(tmpdir / main.name),
     ]
     d = DejaViewInstance(
         command[0],
