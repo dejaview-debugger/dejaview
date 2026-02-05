@@ -286,6 +286,14 @@ class SnapshotManager[ArgType, ReturnType]:
         )
         return snapshot.resume(arg)
 
+    def get_checkpoint_count(self) -> int:
+        """Return the number of active checkpoints."""
+        return len(self.snapshots)
+
+    def get_checkpoint_info(self) -> list[CheckpointInfo]:
+        """Return info about all active checkpoints."""
+        return [s.info for s in self.snapshots]
+
 
 """
 snapshots contains:
