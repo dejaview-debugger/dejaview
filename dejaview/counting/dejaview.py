@@ -230,7 +230,11 @@ class DejaView:
         self.pending_breakpoints: list[str] = []  # Store breakpoints until pdb is ready
         # self.counter.add_handler(print_handler)
 
-        # Set up checkpoint callback for immediate capture on line events
+        # Checkpoint management: track when a checkpoint should be captured
+        self._pending_checkpoint: bool = False
+        self._pending_checkpoint_count: int = 0
+
+        # Set up checkpoint callback to mark when checkpoints are needed
         self.counter._checkpoint_callback = self._on_instruction
 
         # Set up command handler immediately if socket is available
