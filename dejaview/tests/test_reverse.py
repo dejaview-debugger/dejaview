@@ -1,7 +1,12 @@
 import re
 import time
 
-from dejaview.tests.util import DebugCommand, PropertyTester, launch_dejaview
+from dejaview.tests.util import (
+    DebugCommand,
+    PropertyTester,
+    SourceFile,
+    launch_dejaview,
+)
 
 
 def test_reverse_step():
@@ -352,4 +357,37 @@ def test_random_idempotence():
     # This should replay the same random values and timestamps
     PropertyTester.test_idempotence_property(d, forward_steps=5)
 
+    d.quit()
+
+
+def test_rc_2_files():
+    d = launch_dejaview(
+        SourceFile(
+            "a.py",
+            """
+            import b     # Line a1
+            print("a2")  # Line a2
+            b.foo()      # Line a3
+            print("a4")  # Line a4
+            """,
+        ),
+        SourceFile(
+            "b.py",
+            """
+            def foo():        # Line b1
+                print("b2")   # Line b2
+                print("b3")   # Line b3
+            """,
+        ),
+    )
+
+    assert "Line a1" in d.expect_prompt()
+    d.sendline("b b.py:2")
+    d.expect_prompt()
+    d.sendline("c")
+    assert "Line b2" in d.expect_prompt()
+    d.sendline("n")
+    assert "Line b3" in d.expect_prompt()
+    d.sendline("rc")
+    assert "Line b2" in d.expect_prompt()
     d.quit()

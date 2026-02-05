@@ -316,6 +316,7 @@ class DejaView:
                 assert_never(request)
 
     def get_current_position(self) -> CounterPosition:
+        # TODO optimize?
         counts = [frame.count for frame in self.counter.stack]
         return CounterPosition(counts)
 
@@ -482,6 +483,33 @@ class DejaView:
         self.patches = setup_patching()
         return self
 
+    def timeline_head_handler(
+        self, head: CounterPosition
+    ) -> Generator[None, Event, None]:
+        """
+        Track when we reach the timeline head in a replay process.
+        When that happens, give control back to the root process.
+        """
+        while True:
+            event = yield
+            if event.event != "line":
+                continue
+
+            counts = self.get_current_position()
+            if counts == head:
+                self.replay_head_reached = True
+                pdb_instance = self.get_pdb()
+                # If pdb would not stop here, immediately hand
+                # control back to root before executing past head.
+                would_stop = pdb_instance.break_here(event.frame) or (
+                    pdb_instance.stop_here(event.frame)
+                )
+                debug_log(f"reached head in replay process, would_stop={would_stop}")
+                if not would_stop:
+                    self.forward_request_to_root(ContinueRequest())
+                    assert_never()
+                break
+
     def setup_snapshot(self) -> None:
         # capture snapshot
         arg: ResumeSnapshotArg | None = self.snapshot_manager.capture_snapshot()
@@ -495,50 +523,41 @@ class DejaView:
         request = arg.request
         match request:
             case ReverseToTargetRequest():
-                # add handler to enter debugger at to_count
-                def handler() -> Generator[None, Event, None]:
-                    with patching.SetPatchingMode(patching.PatchingMode.MUTED):
-                        while True:
-                            event = yield
-                            # TODO optimize?
-                            counts = self.get_current_position()
-                            if request.to is None or request.to == counts:
-                                self.counter.allow_breakpoints = True
-                                self.counter.breakpoint(event.frame)
-                                break
+                pdb_instance = self.get_pdb()
+                # Request to pause at beginning
+                if request.to is None:
+                    # Pause at beginning
+                    pdb_instance.set_step()
+                    self.counter.add_handler_generator(
+                        self.timeline_head_handler(arg.head)
+                    )
+                # Request to pause at specific position
+                else:
+                    # Disable all pdb tracing (e.g. breakpoints)
+                    self.counter.allow_breakpoints = False
+                    # Wait for main doesn't work because it's handled in trace dispatch
+                    # so turn it off since we're not stopping until request.to anyway
+                    pdb_instance._wait_for_mainpyfile = False
 
-                    # Track when we reach the recorded head so the next continue-like
-                    # command can hand control back to root.
-                    while True:
-                        event = yield
-                        if event.event != "line":
-                            continue
+                    # add handler to enter debugger at request.to
+                    def handler() -> Generator[None, Event, None]:
+                        with patching.SetPatchingMode(patching.PatchingMode.MUTED):
+                            while True:
+                                event = yield
+                                counts = self.get_current_position()
+                                if request.to == counts:
+                                    self.counter.allow_breakpoints = True
+                                    self.counter.breakpoint(event.frame)
+                                    break
 
-                        counts = self.get_current_position()
-                        if counts == arg.head:
-                            self.replay_head_reached = True
-                            pdb_instance = self.counter.get_pdb()
-                            # If pdb would not stop here, immediately hand
-                            # control back to root before executing past head.
-                            would_stop = pdb_instance.break_here(event.frame) or (
-                                pdb_instance.stop_here(event.frame)
-                            )
-                            debug_log(
-                                "reached head in replay process, "
-                                f"would_stop={would_stop}"
-                            )
-                            if not would_stop:
-                                self.forward_request_to_root(ContinueRequest())
-                                assert_never()
-                            break
+                        yield from self.timeline_head_handler(arg.head)
 
-                self.counter.allow_breakpoints = False
-                self.counter.add_handler_generator(handler())
+                    self.counter.add_handler_generator(handler())
+
             case ProbeBreakpointRequest():
 
                 def handler() -> Generator[None, Event, None]:
                     with patching.SetPatchingMode(patching.PatchingMode.MUTED):
-                        pdb_instance = self.counter.get_pdb()
                         last_breakpoint: CounterPosition | None = None
 
                         while True:
@@ -554,11 +573,14 @@ class DejaView:
                                 )
                                 assert_never()
 
-                            if pdb_instance.break_here(event.frame):
+                            if self.get_pdb().break_here(event.frame):
                                 last_breakpoint = counts
 
                 self.counter.allow_breakpoints = False
                 self.counter.add_handler_generator(handler())
+
+            case _:
+                assert_never(request)
 
         # set function state stores
         StateStore.deserialize(arg.function_states)
