@@ -260,18 +260,24 @@ def test_extend_head_until():
 def test_finish():
     d = launch_dejaview(
         """
-        print()         # Line 1
-        print()         # Line 2
+        print("out:", 1)  # Line 1
+        print("out:", 2)  # Line 2
+        print("out:", 3)  # Line 3
         """
     )
     d.assert_line_number(1)
     d.sendline("c")
     output = d.assert_line_number(1)
+    assert "out: 1" in output
+    assert "out: 2" in output
+    assert "out: 3" in output
     assert "The program finished and will be restarted" in output
     d.sendline("n")
     d.assert_line_number(2)
+    d.sendline("n")
+    d.assert_line_number(3)
     d.sendline("back")
-    d.assert_line_number(1)
+    d.assert_line_number(2)
     d.quit()
 
 

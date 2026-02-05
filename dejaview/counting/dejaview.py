@@ -103,7 +103,6 @@ class DebuggerState:
     next_breakpoint_id: int
     breaks: Dict[str, List[int]]
     commands: Dict[int, List[str]]
-    stop_info: DebuggerStopInfo | None
 
 
 @dataclass
@@ -139,7 +138,7 @@ class ContinueRequest:
     Request to continue execution in the root process, extending the timeline.
     """
 
-    pass
+    stopinfo: DebuggerStopInfo
 
 
 @dataclass
@@ -262,7 +261,7 @@ class DejaView:
         arg = ResumeSnapshotArg(
             function_states=StateStore.serialize(),
             head=self.get_current_position(),
-            debugger_state=self.serialize_debugger_state(include_stopinfo=False),
+            debugger_state=self.serialize_debugger_state(),
             request=request,
         )
         return self.snapshot_manager.resume_snapshot(arg)
@@ -311,6 +310,7 @@ class DejaView:
                 pdb_instance.do_quit("")
                 return
             elif isinstance(request, ContinueRequest):
+                self.apply_stopinfo(request.stopinfo)
                 return
             else:
                 assert_never(request)
@@ -320,7 +320,7 @@ class DejaView:
         counts = [frame.count for frame in self.counter.stack]
         return CounterPosition(counts)
 
-    def serialize_debugger_state(self, include_stopinfo: bool = True) -> DebuggerState:
+    def serialize_stopinfo(self) -> DebuggerStopInfo:
         pdb_instance = self.get_pdb()
 
         def frame_to_index(frame: Any, botframe: Any) -> int | None:
@@ -332,6 +332,44 @@ class DejaView:
             if frame is botframe:
                 return -1
             raise ValueError("Frame not found in FrameCounter stack")
+
+        botframe = getattr(pdb_instance, "botframe", None)
+        stop_info = DebuggerStopInfo(
+            stoplineno=getattr(pdb_instance, "stoplineno", -1),
+            stop_index=frame_to_index(
+                getattr(pdb_instance, "stopframe", None), botframe
+            ),
+            return_index=frame_to_index(
+                getattr(pdb_instance, "returnframe", None), botframe
+            ),
+        )
+        return stop_info
+
+    def apply_stopinfo(self, info: DebuggerStopInfo) -> None:
+        """Apply serialized stop info to the current debugger."""
+        pdb_instance = self.get_pdb()
+
+        def index_to_frame(idx: int | None, botframe: Any) -> types.FrameType | None:
+            if idx is None:
+                return None
+            if idx == -1:
+                return botframe
+            if idx < 0 or idx >= len(self.counter.stack):
+                raise ValueError(
+                    "Debugger stop info refers to frame index "
+                    f"{idx} but stack depth is {len(self.counter.stack)}"
+                )
+            return self.counter.stack[idx].frame
+
+        # Restore stop info using live frames derived from saved indices.
+        botframe = getattr(pdb_instance, "botframe", None)
+        stopframe = index_to_frame(info.stop_index, botframe)
+        returnframe = index_to_frame(info.return_index, botframe)
+
+        pdb_instance._set_stopinfo(stopframe, returnframe, info.stoplineno)
+
+    def serialize_debugger_state(self) -> DebuggerState:
+        pdb_instance = self.get_pdb()
 
         serialized_breakpoints: List[BreakpointState] = []
         for bp in bdb.Breakpoint.bpbynumber:
@@ -355,27 +393,12 @@ class DejaView:
             filename: list(lines) for filename, lines in pdb_instance.breaks.items()
         }
         commands = {num: list(cmds) for num, cmds in pdb_instance.commands.items()}
-        stop_info: DebuggerStopInfo | None
-        if include_stopinfo:
-            botframe = getattr(pdb_instance, "botframe", None)
-            stop_info = DebuggerStopInfo(
-                stoplineno=getattr(pdb_instance, "stoplineno", -1),
-                stop_index=frame_to_index(
-                    getattr(pdb_instance, "stopframe", None), botframe
-                ),
-                return_index=frame_to_index(
-                    getattr(pdb_instance, "returnframe", None), botframe
-                ),
-            )
-        else:
-            stop_info = None
 
         return DebuggerState(
             breakpoints=serialized_breakpoints,
             next_breakpoint_id=bdb.Breakpoint.next,
             breaks=breaks,
             commands=commands,
-            stop_info=stop_info,
         )
 
     def apply_debugger_state(self, state: DebuggerState) -> None:
@@ -383,18 +406,6 @@ class DejaView:
         pdb_instance = self.get_pdb()
 
         # debug_log(f"applying debugger state, {state=}")
-
-        def index_to_frame(idx: int | None, botframe: Any) -> types.FrameType | None:
-            if idx is None:
-                return None
-            if idx == -1:
-                return botframe
-            if idx < 0 or idx >= len(self.counter.stack):
-                raise ValueError(
-                    "Debugger state refers to frame index "
-                    f"{idx} but stack depth is {len(self.counter.stack)}"
-                )
-            return self.counter.stack[idx].frame
 
         # Clear any stale breakpoint data before applying the snapshot.
         # Also clear in-place to preserve references held by pdb cmdloop
@@ -443,16 +454,6 @@ class DejaView:
         pdb_instance.commands.update(
             {num: list(cmds) for num, cmds in state.commands.items()}
         )
-
-        # Restore stop info using live frames derived from saved indices.
-        if state.stop_info is not None:
-            botframe = getattr(pdb_instance, "botframe", None)
-            stopframe = index_to_frame(state.stop_info.stop_index, botframe)
-            returnframe = index_to_frame(state.stop_info.return_index, botframe)
-
-            pdb_instance._set_stopinfo(
-                stopframe, returnframe, state.stop_info.stoplineno
-            )
 
     def step_back(self):
         pos = self.get_current_position()
@@ -506,7 +507,9 @@ class DejaView:
                 )
                 debug_log(f"reached head in replay process, would_stop={would_stop}")
                 if not would_stop:
-                    self.forward_request_to_root(ContinueRequest())
+                    self.forward_request_to_root(
+                        ContinueRequest(stopinfo=self.serialize_stopinfo())
+                    )
                     assert_never()
                 break
 
@@ -738,7 +741,9 @@ class DejaView:
             ):
                 debug_log("at head in replay after command, handing back to root")
                 # We are at head in replay and user asked to continue/step; hand back.
-                self.dejaview.forward_request_to_root(ContinueRequest())
+                self.dejaview.forward_request_to_root(
+                    ContinueRequest(self.dejaview.serialize_stopinfo())
+                )
             return stop
 
         def set_quit(self):

@@ -6,6 +6,7 @@ import types
 import typing
 from dataclasses import dataclass
 
+from dejaview.counting import dejaview
 from dejaview.patching import patching
 
 
@@ -30,6 +31,7 @@ class FrameCounter:
             sys.prefix,
             os.path.dirname(os.__file__),
             os.path.dirname(patching.__file__),
+            os.path.dirname(dejaview.__file__),
             "<frozen",
             # "<string>",
         )
@@ -105,6 +107,9 @@ class FrameCounter:
                 self.stack.append(StackFrame(frame, 0))
             elif event == "return":
                 self.stack.pop()
+                # Returning from function also counts as a instruction
+                self.count += 1
+                self.stack[-1].count += 1
             elif event == "line":
                 # Function call has count 0 and first line has count 1
                 self.count += 1
