@@ -158,8 +158,14 @@ class DejaViewInstance(pexpect.spawn):
         return output
 
 
+@dataclass
+class SourceFile:
+    name: str
+    content: str
+
+
 def launch_dejaview(
-    program: str, timeout: float = 10, checkpoint_interval: int = 2
+    main: str | SourceFile, *rest: SourceFile, timeout: float = 10, checkpoint_interval: int = 2
 ) -> DejaViewInstance:
     """
     Launch DejaView with the given program string.
@@ -180,6 +186,7 @@ def launch_dejaview(
         "-m",
         "dejaview",
         tmpfile.name,
+        str(tmpdir / main.name),
     ]
     d = DejaViewInstance(
         command[0],
