@@ -830,6 +830,10 @@ class DejaView:
                 f"{self.curindex if hasattr(self, 'curindex') else 'Not set'}"
             )
 
+            # Safe point: capture any pending checkpoint now that debugger is paused
+            # This must happen BEFORE we block in cmdloop
+            self.dejaview._maybe_capture_pending_checkpoint()
+
             # Set pending breakpoints now that pdb is initialized
             if not self.is_initialized:
                 self.is_initialized = True
@@ -909,12 +913,18 @@ class DejaView:
 
         def user_return(self, frame, return_value):
             """Called when a return trap is set here."""
+            # Safe point: capture any pending checkpoint
+            self.dejaview._maybe_capture_pending_checkpoint()
+
             if self.socket_client and self.socket_client.connected:
                 self.socket_client.send_stopped("step")
             super().user_return(frame, return_value)
 
         def user_exception(self, frame, exc_info):
             """Called when we stop on an exception."""
+            # Safe point: capture any pending checkpoint
+            self.dejaview._maybe_capture_pending_checkpoint()
+
             if self.socket_client and self.socket_client.connected:
                 self.socket_client.send_stopped("exception")
             super().user_exception(frame, exc_info)
