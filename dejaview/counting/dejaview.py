@@ -62,6 +62,7 @@ class CounterPosition:
     """
 
     counts: List[int]
+    instruction_count: int = 0  # global instruction count for checkpoint selection
 
     def decrement(self) -> None:
         """
@@ -71,6 +72,7 @@ class CounterPosition:
             self.counts.pop()
         else:
             self.counts[-1] -= 1
+        self.instruction_count -= 1
 
 
 @dataclass
@@ -239,6 +241,7 @@ class DejaView:
         """Called on every line event to check if a checkpoint is needed.
 
         Captures checkpoints immediately when the interval threshold is reached.
+        In replay processes forked from automatic checkpoints, sets up the replay.
         """
         # Only capture checkpoints in root process during normal execution
         if self.snapshot_manager.is_replay_process:
@@ -253,7 +256,10 @@ class DejaView:
             debug_log(
                 f"DEBUG: capturing checkpoint at count={count} (last was {last_count})"
             )
-            self.snapshot_manager.capture_snapshot(instruction_count=count)
+            arg = self.snapshot_manager.capture_snapshot(instruction_count=count)
+            if arg is not None:
+                # We're in a replay process forked from this checkpoint
+                self._setup_replay_process(arg)
 
     @property
     def pdb(self) -> "DejaView.CustomPdb | None":
@@ -306,9 +312,9 @@ class DejaView:
             if request.to is None:
                 target_count = 0  # Going to beginning
             else:
-                target_count = self.counter.count
+                target_count = request.to.instruction_count
         elif isinstance(request, ProbeBreakpointRequest):
-            target_count = self.counter.count
+            target_count = 0  # Must scan from beginning to find all breakpoints
 
         return self.snapshot_manager.resume_snapshot(arg, target_count=target_count)
 
@@ -364,7 +370,7 @@ class DejaView:
     def get_current_position(self) -> CounterPosition:
         # TODO optimize?
         counts = [frame.count for frame in self.counter.stack]
-        return CounterPosition(counts)
+        return CounterPosition(counts, instruction_count=self.counter.count)
 
     def serialize_stopinfo(self) -> DebuggerStopInfo:
         pdb_instance = self.get_pdb()
@@ -567,6 +573,15 @@ class DejaView:
         if arg is None:  # we're the root process
             return
 
+        self._setup_replay_process(arg)
+
+    def _setup_replay_process(self, arg: ResumeSnapshotArg) -> None:
+        """Set up a replay process after returning from capture_snapshot().
+
+        Installs handlers, deserializes state stores, and applies debugger state.
+        Called from both setup_snapshot() (initial checkpoint) and _on_instruction()
+        (automatic checkpoints).
+        """
         assert self.snapshot_manager.is_replay_process
         debug_log(f"got arg {arg=}, {os.getpid()=}")
         # we're a replay process
