@@ -146,10 +146,6 @@ class FrameCounter:
                 # Propagate debugger quit so the outer loop can shut down cleanly
                 raise
 
-                # Trigger checkpoint callback if registered
-                if self._checkpoint_callback is not None:
-                    self._checkpoint_callback(self.count)
-
         return tracer
 
     def __enter__(self):
