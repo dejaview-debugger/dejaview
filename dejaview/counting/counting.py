@@ -118,6 +118,10 @@ class FrameCounter:
                 self.count += 1
                 self.stack[-1].count += 1
 
+                # Trigger checkpoint callback if registered
+                if self._checkpoint_callback is not None:
+                    self._checkpoint_callback(self.count)
+
             try:
                 # Call the user-defined handlers, remove the ones that return True
                 self.handlers = [
@@ -141,10 +145,6 @@ class FrameCounter:
             except bdb.BdbQuit:
                 # Propagate debugger quit so the outer loop can shut down cleanly
                 raise
-
-                # Trigger checkpoint callback if registered
-                if self._checkpoint_callback is not None:
-                    self._checkpoint_callback(self.count)
 
         return tracer
 

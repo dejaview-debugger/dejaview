@@ -185,11 +185,9 @@ def launch_dejaview(
         "python3",
         "-m",
         "dejaview",
-        tmpfile.name,
         str(tmpdir / main.name),
         "--checkpoint-interval",
         str(checkpoint_interval),
-        tmpfile.name,
     ]
     d = DejaViewInstance(
         command[0],
