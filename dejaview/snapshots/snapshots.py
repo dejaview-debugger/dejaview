@@ -1,9 +1,9 @@
+import bisect
 import multiprocessing as mp
 import os
 import random
 import signal
 import sys
-import typing
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, NoReturn, cast
@@ -71,7 +71,9 @@ class _Snapshot[ArgType, ReturnType]:
         self.arg_queue: mp.SimpleQueue = mp.SimpleQueue()  # replay arguments
         self.exit_code_queue: mp.SimpleQueue = mp.SimpleQueue()  # exit code
         self.return_queue: mp.SimpleQueue = mp.SimpleQueue()  # return value
-        self.snapshot_pid: int | None = None  # PID of the snapshot process
+        self.snapshot_pid: int | None = (
+            None  # PID of the snapshot process, or None if terminated
+        )
 
     def resume(self, arg: ArgType) -> ReturnType:
         self.arg_queue.put(arg)
@@ -97,7 +99,9 @@ class _Snapshot[ArgType, ReturnType]:
                 os.kill(self.snapshot_pid, signal.SIGTERM)
                 os.waitpid(self.snapshot_pid, 0)
             except (OSError, ChildProcessError):
-                pass  # Process already terminated
+                # Process may have already exited if its replay child
+                # crashed or if the OS reaped it.
+                pass
             self.snapshot_pid = None
 
 
@@ -129,11 +133,6 @@ class SnapshotManager[ArgType, ReturnType]:
         self.max_checkpoints = max_checkpoints
         self._last_checkpoint_count = 0
 
-        # Callback for when checkpoints are captured
-        self._on_checkpoint_captured: typing.Callable[[CheckpointInfo], None] | None = (
-            None
-        )
-
     @property
     def is_replay_process(self) -> bool:
         """
@@ -159,15 +158,12 @@ class SnapshotManager[ArgType, ReturnType]:
         # to run in a replay process.
         os._exit(0)
 
-    def capture_snapshot(
-        self, instruction_count: int = 0, is_automatic: bool = False
-    ) -> ArgType | None:
+    def capture_snapshot(self, instruction_count: int = 0) -> ArgType | None:
         """
         Capture a snapshot by forking the root process.
 
         Args:
             instruction_count: The current instruction count for this checkpoint
-            is_automatic: If True, this is an automatic checkpoint (subject to eviction)
 
         Returns `None` in the root process, and the argument passed to
         `resume_snapshot` in the replay process.
@@ -176,9 +172,9 @@ class SnapshotManager[ArgType, ReturnType]:
             "Only root process can capture snapshots"
         )
 
-        # Evict oldest non-initial checkpoint if at limit (for automatic checkpoints)
-        if is_automatic and len(self.snapshots) >= self.max_checkpoints:
-            self._evict_oldest_checkpoint()
+        # Evict a checkpoint if at capacity
+        if len(self.snapshots) >= self.max_checkpoints:
+            self._evict_checkpoint(incoming_count=instruction_count)
 
         checkpoint_info = CheckpointInfo(instruction_count=instruction_count)
         snapshot = _Snapshot[ArgType, ReturnType](checkpoint_info)
@@ -192,8 +188,6 @@ class SnapshotManager[ArgType, ReturnType]:
                 f"DEBUG: captured checkpoint at count={instruction_count}, "
                 f"total checkpoints={len(self.snapshots)}"
             )
-            if self._on_checkpoint_captured:
-                self._on_checkpoint_captured(checkpoint_info)
             return None
 
         # snapshot process
@@ -212,61 +206,67 @@ class SnapshotManager[ArgType, ReturnType]:
                 _, status = os.waitpid(replay_pid, 0)
                 snapshot.exit_code_queue.put(os.WEXITSTATUS(status))
 
-    def maybe_capture_checkpoint(self, current_count: int) -> bool:
-        """
-        Capture a checkpoint if enough instructions have elapsed since the last one.
-
-        Args:
-            current_count: The current instruction count
-
-        Returns:
-            True if a checkpoint was captured, False otherwise
-        """
-        if self.process_type != ProcessType.ROOT:
-            return False  # Only root process can capture checkpoints
-
-        if current_count - self._last_checkpoint_count < self.checkpoint_interval:
-            return False
-
-        self.capture_snapshot(instruction_count=current_count, is_automatic=True)
-        return True
-
     def find_best_checkpoint(self, target_count: int) -> int:
         """
         Find the index of the best checkpoint to resume from.
 
         Returns the index of the checkpoint with the largest instruction_count
-        that is still <= target_count.
+        that is still <= target_count. Uses binary search since snapshots
+        are always sorted by instruction count.
         """
-        best_idx = 0
-        for i, snapshot in enumerate(self.snapshots):
-            if snapshot.info.instruction_count <= target_count:
-                best_idx = i
-            else:
-                break  # snapshots are sorted by instruction count
-        return best_idx
+        if not self.snapshots:
+            return 0
+        counts = [s.info.instruction_count for s in self.snapshots]
+        idx = bisect.bisect_right(counts, target_count) - 1
+        return max(idx, 0)
 
-    def _evict_oldest_checkpoint(self) -> None:
-        """Remove the oldest checkpoint (except the initial one at count=0)."""
+    def _evict_checkpoint(self, incoming_count: int) -> None:
+        """Remove the checkpoint whose removal minimizes the maximum gap.
+
+        Considers both existing checkpoints and the incoming one to produce
+        balanced spacing across the entire execution timeline. This avoids
+        clustering checkpoints near the end (which the old "always evict
+        second-oldest" policy caused).
+        """
         if len(self.snapshots) <= 1:
             return
 
-        # Remove the second oldest (keep the initial snapshot)
-        old_snapshot = self.snapshots.pop(1)
-        debug_log(
-            f"DEBUG: evicting checkpoint at count={old_snapshot.info.instruction_count}"
-        )
-        old_snapshot.terminate()
+        best_idx = 1
+        best_max_gap = float("inf")
 
-    def resume_snapshot(
-        self, arg: ArgType, target_count: int | None = None
-    ) -> ReturnType:
+        for candidate in range(1, len(self.snapshots)):
+            # Compute the maximum gap if we removed this candidate
+            max_gap = 0
+            prev = self.snapshots[0].info.instruction_count
+            for i in range(1, len(self.snapshots)):
+                if i == candidate:
+                    continue
+                gap = self.snapshots[i].info.instruction_count - prev
+                if gap > max_gap:
+                    max_gap = gap
+                prev = self.snapshots[i].info.instruction_count
+            # Account for gap from last remaining checkpoint to the incoming one
+            gap_to_incoming = incoming_count - prev
+            if gap_to_incoming > max_gap:
+                max_gap = gap_to_incoming
+
+            if max_gap < best_max_gap:
+                best_max_gap = max_gap
+                best_idx = candidate
+
+        evicted = self.snapshots.pop(best_idx)
+        debug_log(
+            f"DEBUG: evicting checkpoint at count={evicted.info.instruction_count}"
+        )
+        evicted.terminate()
+
+    def resume_snapshot(self, arg: ArgType, target_count: int) -> ReturnType:
         """
         Resume the best snapshot for the given target count.
 
         Args:
             arg: The argument to pass to the replay process
-            target_count: The target instruction count. If None, uses first snapshot.
+            target_count: The target instruction count to resume near.
 
         Returns:
             The return value from the replay process
@@ -278,26 +278,13 @@ class SnapshotManager[ArgType, ReturnType]:
         if len(self.snapshots) == 0:
             raise RuntimeError("No snapshots to resume")
 
-        # Find the best checkpoint to resume from
-        if target_count is not None:
-            checkpoint_idx = self.find_best_checkpoint(target_count)
-        else:
-            checkpoint_idx = 0
-
+        checkpoint_idx = self.find_best_checkpoint(target_count)
         snapshot = self.snapshots[checkpoint_idx]
         debug_log(
             f"DEBUG: resuming from checkpoint {checkpoint_idx} "
             f"at count={snapshot.info.instruction_count} for target={target_count}"
         )
         return snapshot.resume(arg)
-
-    def get_checkpoint_count(self) -> int:
-        """Return the number of active checkpoints."""
-        return len(self.snapshots)
-
-    def get_checkpoint_info(self) -> list[CheckpointInfo]:
-        """Return info about all active checkpoints."""
-        return [s.info for s in self.snapshots]
 
 
 """
