@@ -75,7 +75,21 @@ class _Snapshot[ArgType, ReturnType]:
             None  # PID of the snapshot process, or None if terminated
         )
 
+    def is_alive(self) -> bool:
+        """Check whether the snapshot process is still running."""
+        if self.snapshot_pid is None:
+            return False
+        try:
+            os.kill(self.snapshot_pid, 0)  # signal 0 = existence check
+            return True
+        except OSError:
+            return False
+
     def resume(self, arg: ArgType) -> ReturnType:
+        if not self.is_alive():
+            raise RuntimeError(
+                f"Snapshot process (count={self.info.instruction_count}) is dead"
+            )
         self.arg_queue.put(arg)
         debug_log(
             f"DEBUG: resuming snapshot at count={self.info.instruction_count} "
@@ -300,13 +314,25 @@ class SnapshotManager[ArgType, ReturnType]:
         if len(self.snapshots) == 0:
             raise RuntimeError("No snapshots to resume")
 
-        checkpoint_idx = self.find_best_checkpoint(target_count)
-        snapshot = self.snapshots[checkpoint_idx]
-        debug_log(
-            f"DEBUG: resuming from checkpoint {checkpoint_idx} "
-            f"at count={snapshot.info.instruction_count} for target={target_count}"
-        )
-        return snapshot.resume(arg)
+        # Try the best checkpoint first; if its process is dead, remove it
+        # and fall back to the next best until one works.
+        while self.snapshots:
+            checkpoint_idx = self.find_best_checkpoint(target_count)
+            snapshot = self.snapshots[checkpoint_idx]
+            debug_log(
+                f"DEBUG: resuming from checkpoint {checkpoint_idx} "
+                f"at count={snapshot.info.instruction_count} for target={target_count}"
+            )
+            if not snapshot.is_alive():
+                debug_log(
+                    f"DEBUG: snapshot at count={snapshot.info.instruction_count} "
+                    f"is dead, removing and trying next"
+                )
+                self.snapshots.pop(checkpoint_idx)
+                continue
+            return snapshot.resume(arg)
+
+        raise RuntimeError("All snapshot processes are dead")
 
     def get_checkpoint_count(self) -> int:
         """Return the number of active checkpoints."""
