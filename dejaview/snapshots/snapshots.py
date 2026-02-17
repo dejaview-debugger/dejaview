@@ -86,10 +86,6 @@ class _Snapshot[ArgType, ReturnType]:
             return False
 
     def resume(self, arg: ArgType) -> ReturnType:
-        if not self.is_alive():
-            raise RuntimeError(
-                f"Snapshot process (count={self.info.instruction_count}) is dead"
-            )
         self.arg_queue.put(arg)
         debug_log(
             f"DEBUG: resuming snapshot at count={self.info.instruction_count} "
