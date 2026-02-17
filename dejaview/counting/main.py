@@ -39,7 +39,9 @@ class CustomPdb(DejaView.CustomPdb):
 # copied from pdb.py
 @typing.no_type_check
 def main():
-    opts, args = getopt.getopt(sys.argv[1:], "mhc:p:", ["help", "command=", "port=", "checkpoint-interval="])
+    opts, args = getopt.getopt(
+        sys.argv[1:], "mhc:p:", ["help", "command=", "port=", "checkpoint-interval="]
+    )
 
     if not args:
         print(pdb._usage)
@@ -81,7 +83,10 @@ def main():
             print(f"Warning: Failed to connect to debug adapter on port {port}")
             socket_client = None
 
-    dejaview = DejaView(socket_client=socket_client, checkpoint_interval=checkpoint_interval)
+    dejaview = DejaView(
+        socket_client=socket_client,
+        checkpoint_interval=checkpoint_interval,
+    )
     dejaview.counter.pdb_factory = lambda: CustomPdb(dejaview)
     my_pdb: CustomPdb = dejaview.get_pdb()
     my_pdb.rcLines.extend(commands)

@@ -165,7 +165,10 @@ class SourceFile:
 
 
 def launch_dejaview(
-    main: str | SourceFile, *rest: SourceFile, timeout: float = 10, checkpoint_interval: int = 2
+    main: str | SourceFile,
+    *rest: SourceFile,
+    timeout: float = 10,
+    checkpoint_interval: int = 2,
 ) -> DejaViewInstance:
     """
     Launch DejaView with the given program string.
