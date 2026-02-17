@@ -230,24 +230,30 @@ class DejaView:
         self.pending_breakpoints: list[str] = []  # Store breakpoints until pdb is ready
         # self.counter.add_handler(print_handler)
 
-        # Set up checkpoint callback for immediate capture on line events
-        self.counter._checkpoint_callback = self._on_instruction
+        # Register checkpoint handler to capture snapshots at interval
+        self.counter.add_handler(self._on_instruction)
 
         # Set up command handler immediately if socket is available
         if self.socket_client and self.socket_client.connected:
             self.socket_client.set_command_handler(self._handle_socket_command)
 
-    def _on_instruction(self, count: int) -> None:
-        """Called on every line event to check if a checkpoint is needed.
+    def _on_instruction(self, event: Event) -> bool:
+        """Handler that checks if a checkpoint is needed on each line event.
 
         Captures checkpoints immediately when the interval threshold is reached.
         In replay processes forked from automatic checkpoints, sets up the replay.
+
+        Returns False always (this handler is never removed).
         """
+        if event.event != "line":
+            return False
+
         # Only capture checkpoints in root process during normal execution
         if self.snapshot_manager.is_replay_process:
-            return
+            return False
 
         # Check if we've passed the checkpoint interval threshold
+        count = event.count
         interval = self.snapshot_manager.checkpoint_interval
         last_count = self.snapshot_manager._last_checkpoint_count
 
@@ -260,6 +266,8 @@ class DejaView:
             if arg is not None:
                 # We're in a replay process forked from this checkpoint
                 self._setup_replay_process(arg)
+
+        return False
 
     @property
     def pdb(self) -> "DejaView.CustomPdb | None":

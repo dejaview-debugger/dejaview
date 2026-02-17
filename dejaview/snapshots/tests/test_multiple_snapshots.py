@@ -10,6 +10,14 @@ from dejaview.snapshots.snapshots import (
 )
 
 
+def _make_line_event(count: int) -> MagicMock:
+    """Create a mock line Event for testing _on_instruction."""
+    event = MagicMock()
+    event.count = count
+    event.event = "line"
+    return event
+
+
 def _make_mock_snapshot(instruction_count: int) -> MagicMock:
     """Create a mock _Snapshot with the given instruction count."""
     mock = MagicMock()
@@ -188,8 +196,8 @@ class TestCaptureSnapshotEviction:
         assert len(manager.snapshots) == 2
 
 
-class TestDejaViewImmediateCheckpoint:
-    """Tests for immediate checkpoint capture in DejaView."""
+class TestDejaViewCheckpointHandler:
+    """Tests for checkpoint capture handler in DejaView."""
 
     @patch("dejaview.snapshots.snapshots.safe_fork")
     def test_on_instruction_captures_at_interval(self, mock_fork):
@@ -199,11 +207,11 @@ class TestDejaViewImmediateCheckpoint:
         dv.snapshot_manager._last_checkpoint_count = 0
 
         # Below interval - should not capture
-        dv._on_instruction(50)
+        dv._on_instruction(_make_line_event(50))
         assert len(dv.snapshot_manager.snapshots) == 0
 
         # At interval - should capture immediately
-        dv._on_instruction(100)
+        dv._on_instruction(_make_line_event(100))
         assert len(dv.snapshot_manager.snapshots) == 1
         assert dv.snapshot_manager.snapshots[0].info.instruction_count == 100
 
@@ -214,21 +222,76 @@ class TestDejaViewImmediateCheckpoint:
         dv.snapshot_manager._last_checkpoint_count = 0
 
         # Even at interval, should not capture in replay
-        dv._on_instruction(200)
+        dv._on_instruction(_make_line_event(200))
         assert len(dv.snapshot_manager.snapshots) == 0
 
     @patch("dejaview.snapshots.snapshots.safe_fork")
-    def test_callback_invoked_on_line_event(self, mock_fork):
-        """The checkpoint callback should be invoked on every line event."""
+    def test_handler_captures_multiple_checkpoints(self, mock_fork):
+        """The handler should capture at each interval threshold."""
         mock_fork.return_value = 12345
         dv = DejaView(checkpoint_interval=50)
 
-        # Simulate line events by calling the callback directly
-        # (In real execution, FrameCounter calls this)
+        # Simulate line events by calling the handler directly
         for count in range(1, 101):
-            dv._on_instruction(count)
+            dv._on_instruction(_make_line_event(count))
 
         # Should have captured at counts 50 and 100
         assert len(dv.snapshot_manager.snapshots) == 2
         assert dv.snapshot_manager.snapshots[0].info.instruction_count == 50
         assert dv.snapshot_manager.snapshots[1].info.instruction_count == 100
+
+    def test_on_instruction_ignores_non_line_events(self):
+        """_on_instruction should only act on line events."""
+        dv = DejaView(checkpoint_interval=1)
+        dv.snapshot_manager._last_checkpoint_count = 0
+
+        # Call and return events should be ignored
+        call_event = MagicMock(count=100, event="call")
+        return_event = MagicMock(count=200, event="return")
+        assert dv._on_instruction(call_event) is False
+        assert dv._on_instruction(return_event) is False
+        assert len(dv.snapshot_manager.snapshots) == 0
+
+
+class TestSkipWastefulCapture:
+    """Tests for the skip-capture-if-wasteful optimization."""
+
+    @patch("dejaview.snapshots.snapshots.safe_fork", return_value=12345)
+    def test_skips_when_new_gap_is_smallest(self, mock_fork):
+        """Should skip capture when new checkpoint is in the densest region."""
+        manager: SnapshotManager = SnapshotManager(max_checkpoints=3)
+        s0 = _make_mock_snapshot(0)
+        s1 = _make_mock_snapshot(500)
+        s2 = _make_mock_snapshot(1000)
+        s0.snapshot_pid = 1000
+        s1.snapshot_pid = 1001
+        s2.snapshot_pid = 1002
+        manager.snapshots = [s0, s1, s2]  # type: ignore[assignment]
+
+        # Gap from s2 (1000) to new (1100) = 100
+        # Existing gaps: 0->500 = 500, 500->1000 = 500
+        # New gap (100) is smallest, so skip
+        result = manager.capture_snapshot(instruction_count=1100)
+
+        assert result is None
+        assert len(manager.snapshots) == 3  # No change
+        mock_fork.assert_not_called()
+
+    @patch("dejaview.snapshots.snapshots.safe_fork", return_value=12345)
+    def test_does_not_skip_when_existing_gap_is_smaller(self, mock_fork):
+        """Should proceed with capture when an existing gap is smaller."""
+        manager: SnapshotManager = SnapshotManager(max_checkpoints=3)
+        s0 = _make_mock_snapshot(0)
+        s1 = _make_mock_snapshot(10)
+        s2 = _make_mock_snapshot(1000)
+        s0.snapshot_pid = 1000
+        s1.snapshot_pid = 1001
+        s2.snapshot_pid = 1002
+        manager.snapshots = [s0, s1, s2]  # type: ignore[assignment]
+
+        # Gap from s2 (1000) to new (1500) = 500
+        # Existing gap 0->10 = 10 is smaller, so don't skip
+        manager.capture_snapshot(instruction_count=1500)
+
+        # Should have evicted and captured (fork was called)
+        mock_fork.assert_called_once()

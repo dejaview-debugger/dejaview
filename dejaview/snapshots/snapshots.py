@@ -158,6 +158,28 @@ class SnapshotManager[ArgType, ReturnType]:
         # to run in a replay process.
         os._exit(0)
 
+    def _should_skip_capture(self, instruction_count: int) -> bool:
+        """Check if a new checkpoint at instruction_count would be wasteful.
+
+        If the gap from the last checkpoint to the new one is smaller than
+        all existing gaps, the new checkpoint is in the densest region and
+        would likely be the next eviction candidate.  Skip the fork to avoid
+        wasting resources.
+        """
+        if len(self.snapshots) <= 1:
+            return False
+
+        new_gap = instruction_count - self.snapshots[-1].info.instruction_count
+        for i in range(1, len(self.snapshots)):
+            existing_gap = (
+                self.snapshots[i].info.instruction_count
+                - self.snapshots[i - 1].info.instruction_count
+            )
+            if existing_gap <= new_gap:
+                return False  # Existing gap is smaller, new checkpoint adds value
+
+        return True  # New gap is the smallest, checkpoint would be wasteful
+
     def capture_snapshot(self, instruction_count: int = 0) -> ArgType | None:
         """
         Capture a snapshot by forking the root process.
@@ -172,8 +194,12 @@ class SnapshotManager[ArgType, ReturnType]:
             "Only root process can capture snapshots"
         )
 
-        # Evict a checkpoint if at capacity
+        # Evict a checkpoint if at capacity, or skip if the new one would
+        # be immediately redundant
         if len(self.snapshots) >= self.max_checkpoints:
+            if self._should_skip_capture(instruction_count):
+                self._last_checkpoint_count = instruction_count
+                return None
             self._evict_checkpoint(incoming_count=instruction_count)
 
         checkpoint_info = CheckpointInfo(instruction_count=instruction_count)
@@ -216,42 +242,38 @@ class SnapshotManager[ArgType, ReturnType]:
         """
         if not self.snapshots:
             return 0
-        counts = [s.info.instruction_count for s in self.snapshots]
-        idx = bisect.bisect_right(counts, target_count) - 1
+        idx = (
+            bisect.bisect_right(
+                self.snapshots,
+                target_count,
+                key=lambda s: s.info.instruction_count,
+            )
+            - 1
+        )
         return max(idx, 0)
 
     def _evict_checkpoint(self, incoming_count: int) -> None:
-        """Remove the checkpoint whose removal minimizes the maximum gap.
+        """Remove the checkpoint whose removal creates the smallest gap.
 
-        Considers both existing checkpoints and the incoming one to produce
-        balanced spacing across the entire execution timeline. This avoids
-        clustering checkpoints near the end (which the old "always evict
-        second-oldest" policy caused).
+        For each candidate (except index 0), the merged gap after removal is
+        simply ``next_count - prev_count``.  Evict the candidate with the
+        smallest merged gap since it provides the least spacing benefit.
         """
         if len(self.snapshots) <= 1:
             return
 
         best_idx = 1
-        best_max_gap = float("inf")
+        best_merged_gap = float("inf")
 
         for candidate in range(1, len(self.snapshots)):
-            # Compute the maximum gap if we removed this candidate
-            max_gap = 0
-            prev = self.snapshots[0].info.instruction_count
-            for i in range(1, len(self.snapshots)):
-                if i == candidate:
-                    continue
-                gap = self.snapshots[i].info.instruction_count - prev
-                if gap > max_gap:
-                    max_gap = gap
-                prev = self.snapshots[i].info.instruction_count
-            # Account for gap from last remaining checkpoint to the incoming one
-            gap_to_incoming = incoming_count - prev
-            if gap_to_incoming > max_gap:
-                max_gap = gap_to_incoming
-
-            if max_gap < best_max_gap:
-                best_max_gap = max_gap
+            prev_count = self.snapshots[candidate - 1].info.instruction_count
+            if candidate == len(self.snapshots) - 1:
+                next_count = incoming_count
+            else:
+                next_count = self.snapshots[candidate + 1].info.instruction_count
+            merged_gap = next_count - prev_count
+            if merged_gap < best_merged_gap:
+                best_merged_gap = merged_gap
                 best_idx = candidate
 
         evicted = self.snapshots.pop(best_idx)
