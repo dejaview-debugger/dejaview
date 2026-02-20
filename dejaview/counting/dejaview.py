@@ -22,7 +22,11 @@ from dejaview.counting.socket_client import DebugSocketClient
 from dejaview.patching import patching
 from dejaview.patching.setup import setup_patching
 from dejaview.patching.state_store import StateStore
-from dejaview.snapshots.snapshots import SnapshotManager
+from dejaview.snapshots.snapshots import (
+    DEFAULT_MAX_SNAPSHOTS,
+    DEFAULT_SNAPSHOT_INTERVAL,
+    SnapshotManager,
+)
 
 # Debug mode flag - set to False to disable debug logging
 DEBUG = False
@@ -58,6 +62,7 @@ class CounterPosition:
     """
 
     counts: List[int]
+    instruction_count: int = 0  # global instruction count for snapshot selection
 
     def decrement(self) -> None:
         """
@@ -67,6 +72,7 @@ class CounterPosition:
             self.counts.pop()
         else:
             self.counts[-1] -= 1
+        self.instruction_count -= 1
 
 
 @dataclass
@@ -205,20 +211,63 @@ class ResumeSnapshotReturn:
 
 
 class DejaView:
-    def __init__(self, socket_client: Optional[DebugSocketClient] = None):
+    def __init__(
+        self,
+        socket_client: Optional[DebugSocketClient] = None,
+        snapshot_interval: int = DEFAULT_SNAPSHOT_INTERVAL,
+        max_snapshots: int = DEFAULT_MAX_SNAPSHOTS,
+    ):
         self.counter = FrameCounter()
         self.snapshot_manager = SnapshotManager[
             ResumeSnapshotArg, ResumeSnapshotReturn
-        ]()
+        ](
+            snapshot_interval=snapshot_interval,
+            max_snapshots=max_snapshots,
+        )
         self.socket_client = socket_client
         self.counter.pdb_factory = lambda: self.CustomPdb(self)
         self.replay_head_reached = False
         self.pending_breakpoints: list[str] = []  # Store breakpoints until pdb is ready
         # self.counter.add_handler(print_handler)
 
+        # Register snapshot handler to capture snapshots at interval
+        self.counter.add_handler(self._on_instruction)
+
         # Set up command handler immediately if socket is available
         if self.socket_client and self.socket_client.connected:
             self.socket_client.set_command_handler(self._handle_socket_command)
+
+    def _on_instruction(self, event: Event) -> bool:
+        """Handler that checks if a snapshot is needed on each line event.
+
+        Captures snapshots immediately when the interval threshold is reached.
+        In replay processes forked from automatic snapshots, sets up the replay.
+
+        Returns False always (this handler is never removed).
+        """
+        if event.event != "line":
+            return False
+
+        # Only capture snapshots in root process during normal execution
+        if self.snapshot_manager.is_replay_process:
+            return False
+
+        # Check if we've passed the snapshot interval threshold
+        count = event.count
+        interval = self.snapshot_manager.snapshot_interval
+        last_count = self.snapshot_manager._last_snapshot_count
+
+        if count - last_count >= interval:
+            # Capture snapshot immediately
+            debug_log(
+                f"DEBUG: capturing snapshot at count={count} (last was {last_count})"
+            )
+            arg = self.snapshot_manager.capture_snapshot(instruction_count=count)
+            if arg is not None:
+                # We're in a replay process forked from this snapshot
+                self._setup_replay_process(arg)
+
+        return False
 
     @property
     def pdb(self) -> "DejaView.CustomPdb | None":
@@ -264,7 +313,18 @@ class DejaView:
             debugger_state=self.serialize_debugger_state(),
             request=request,
         )
-        return self.snapshot_manager.resume_snapshot(arg)
+
+        # Calculate target count for snapshot selection
+        target_count: int = 0
+        if isinstance(request, ReverseToTargetRequest):
+            if request.to is None:
+                target_count = 0  # Going to beginning
+            else:
+                target_count = request.to.instruction_count
+        elif isinstance(request, ProbeBreakpointRequest):
+            target_count = 0  # Must scan from beginning to find all breakpoints
+
+        return self.snapshot_manager.resume_snapshot(arg, target_count=target_count)
 
     def execute_request_with_return(self, request: RequestForReplay) -> ValueResult:
         ret = self.execute_request_for_replay(request)
@@ -318,7 +378,7 @@ class DejaView:
     def get_current_position(self) -> CounterPosition:
         # TODO optimize?
         counts = [frame.count for frame in self.counter.stack]
-        return CounterPosition(counts)
+        return CounterPosition(counts, instruction_count=self.counter.count)
 
     def serialize_stopinfo(self) -> DebuggerStopInfo:
         pdb_instance = self.get_pdb()
@@ -514,11 +574,22 @@ class DejaView:
                 break
 
     def setup_snapshot(self) -> None:
-        # capture snapshot
-        arg: ResumeSnapshotArg | None = self.snapshot_manager.capture_snapshot()
+        # capture initial snapshot at instruction count 0
+        arg: ResumeSnapshotArg | None = self.snapshot_manager.capture_snapshot(
+            instruction_count=0
+        )
         if arg is None:  # we're the root process
             return
 
+        self._setup_replay_process(arg)
+
+    def _setup_replay_process(self, arg: ResumeSnapshotArg) -> None:
+        """Set up a replay process after returning from capture_snapshot().
+
+        Installs handlers, deserializes state stores, and applies debugger state.
+        Called from both setup_snapshot() (initial snapshot) and _on_instruction()
+        (automatic snapshots).
+        """
         assert self.snapshot_manager.is_replay_process
         debug_log(f"got arg {arg=}, {os.getpid()=}")
         # we're a replay process

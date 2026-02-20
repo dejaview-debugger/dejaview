@@ -7,6 +7,7 @@ import typing
 
 from dejaview.counting.dejaview import DejaView
 from dejaview.counting.socket_client import DebugSocketClient
+from dejaview.snapshots.snapshots import DEFAULT_SNAPSHOT_INTERVAL
 
 
 class CustomPdb(DejaView.CustomPdb):
@@ -38,7 +39,9 @@ class CustomPdb(DejaView.CustomPdb):
 # copied from pdb.py
 @typing.no_type_check
 def main():
-    opts, args = getopt.getopt(sys.argv[1:], "mhc:p:", ["help", "command=", "port="])
+    opts, args = getopt.getopt(
+        sys.argv[1:], "mhc:p:", ["help", "command=", "port=", "snapshot-interval="]
+    )
 
     if not args:
         print(pdb._usage)
@@ -52,10 +55,12 @@ def main():
 
     # Get port if specified
     port = None
+    snapshot_interval = DEFAULT_SNAPSHOT_INTERVAL
     for opt, optarg in opts:
         if opt in ["-p", "--port"]:
             port = int(optarg)
-            break
+        elif opt == "--snapshot-interval":
+            snapshot_interval = int(optarg)
 
     module_indicated = any(opt in ["-m"] for opt, optarg in opts)
     cls = pdb._ModuleTarget if module_indicated else pdb._ScriptTarget
@@ -78,7 +83,10 @@ def main():
             print(f"Warning: Failed to connect to debug adapter on port {port}")
             socket_client = None
 
-    dejaview = DejaView(socket_client=socket_client)
+    dejaview = DejaView(
+        socket_client=socket_client,
+        snapshot_interval=snapshot_interval,
+    )
     dejaview.counter.pdb_factory = lambda: CustomPdb(dejaview)
     my_pdb: CustomPdb = dejaview.get_pdb()
     my_pdb.rcLines.extend(commands)

@@ -1,7 +1,10 @@
+import bisect
 import multiprocessing as mp
 import os
 import random
+import signal
 import sys
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, NoReturn, cast
 
@@ -9,6 +12,10 @@ from dejaview.snapshots.safe_fork import safe_fork
 
 # Debug mode flag - set to False to disable debug logging
 DEBUG = False
+
+# Configuration defaults
+DEFAULT_SNAPSHOT_INTERVAL = 1000  # instructions between snapshots
+DEFAULT_MAX_SNAPSHOTS = 10  # maximum number of snapshots to keep
 
 
 def debug_log(*args: Any) -> None:
@@ -21,6 +28,14 @@ class ProcessType(Enum):
     ROOT = 0
     SNAPSHOT = 1
     REPLAY = 2
+
+
+@dataclass
+class SnapshotInfo:
+    """Metadata about a snapshot."""
+
+    instruction_count: int  # Global instruction count when snapshot was taken
+    # Note: We don't store CounterPosition here because it's passed at resume time
 
 
 # Test program for debug
@@ -36,7 +51,7 @@ def test():
         pid = os.getpid()
         print(pid, f_next)
         if i == 5:
-            state = manager.capture_snapshot()
+            state = manager.capture_snapshot(instruction_count=i)
             if state is not None:
                 print("got state:", state)
 
@@ -44,20 +59,38 @@ def test():
     print(pid, "random state:", hash(random.getstate()))
     print(pid, "random number:", random.randint(0, 100))
     print(pid, res)
-    manager.resume_snapshot("message from fork")
+    manager.resume_snapshot("message from fork", target_count=5)
 
 
 class _Snapshot[ArgType, ReturnType]:
     def __init__(
         self,
+        snapshot_info: SnapshotInfo,
     ):
+        self.info = snapshot_info
         self.arg_queue: mp.SimpleQueue = mp.SimpleQueue()  # replay arguments
         self.exit_code_queue: mp.SimpleQueue = mp.SimpleQueue()  # exit code
         self.return_queue: mp.SimpleQueue = mp.SimpleQueue()  # return value
+        self.snapshot_pid: int | None = (
+            None  # PID of the snapshot process, or None if terminated
+        )
+
+    def is_alive(self) -> bool:
+        """Check whether the snapshot process is still running."""
+        if self.snapshot_pid is None:
+            return False
+        try:
+            os.kill(self.snapshot_pid, 0)  # signal 0 = existence check
+            return True
+        except OSError:
+            return False
 
     def resume(self, arg: ArgType) -> ReturnType:
         self.arg_queue.put(arg)
-        debug_log("DEBUG: resuming snapshot in replay process")
+        debug_log(
+            f"DEBUG: resuming snapshot at count={self.info.instruction_count} "
+            f"in replay process"
+        )
         status = self.exit_code_queue.get()
         debug_log("DEBUG: replay process exited with status", status)
         if status != 0:
@@ -69,13 +102,33 @@ class _Snapshot[ArgType, ReturnType]:
                 raise RuntimeError("No return value from replay process")
             return cast(ReturnType, self.return_queue.get())
 
+    def terminate(self) -> None:
+        """Terminate the snapshot process to free resources."""
+        if self.snapshot_pid is not None:
+            try:
+                os.kill(self.snapshot_pid, signal.SIGTERM)
+                os.waitpid(self.snapshot_pid, 0)
+            except (OSError, ChildProcessError):
+                # Process may have already exited if its replay child
+                # crashed or if the OS reaped it.
+                pass
+            self.snapshot_pid = None
+
 
 class SnapshotManager[ArgType, ReturnType]:
     """
-    Singleton class to manage snapshots and replay processes.
+    Manages multiple snapshots for efficient reverse debugging.
+
+    Instead of always replaying from the beginning, we maintain multiple
+    snapshots taken at strategic points during execution. When reversing,
+    we resume from the nearest snapshot before the target position.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        snapshot_interval: int = DEFAULT_SNAPSHOT_INTERVAL,
+        max_snapshots: int = DEFAULT_MAX_SNAPSHOTS,
+    ):
         # is this process the root process or a snapshot child process?
         self.process_type: ProcessType = ProcessType.ROOT
 
@@ -84,6 +137,11 @@ class SnapshotManager[ArgType, ReturnType]:
 
         # available only in root process
         self.snapshots: list[_Snapshot[ArgType, ReturnType]] = []
+
+        # Configuration for automatic snapshotting
+        self.snapshot_interval = snapshot_interval
+        self.max_snapshots = max_snapshots
+        self._last_snapshot_count = 0
 
     @property
     def is_replay_process(self) -> bool:
@@ -110,9 +168,34 @@ class SnapshotManager[ArgType, ReturnType]:
         # to run in a replay process.
         os._exit(0)
 
-    def capture_snapshot(self) -> ArgType | None:
+    def _should_skip_capture(self, instruction_count: int) -> bool:
+        """Check if a new snapshot at instruction_count would be wasteful.
+
+        If the gap from the last snapshot to the new one is smaller than
+        all existing gaps, the new snapshot is in the densest region and
+        would likely be the next eviction candidate.  Skip the fork to avoid
+        wasting resources.
+        """
+        if len(self.snapshots) <= 1:
+            return False
+
+        new_gap = instruction_count - self.snapshots[-1].info.instruction_count
+        for i in range(1, len(self.snapshots)):
+            existing_gap = (
+                self.snapshots[i].info.instruction_count
+                - self.snapshots[i - 1].info.instruction_count
+            )
+            if existing_gap <= new_gap:
+                return False  # Existing gap is smaller, new snapshot adds value
+
+        return True  # New gap is the smallest, snapshot would be wasteful
+
+    def capture_snapshot(self, instruction_count: int = 0) -> ArgType | None:
         """
         Capture a snapshot by forking the root process.
+
+        Args:
+            instruction_count: The current instruction count for this snapshot
 
         Returns `None` in the root process, and the argument passed to
         `resume_snapshot` in the replay process.
@@ -120,12 +203,27 @@ class SnapshotManager[ArgType, ReturnType]:
         assert self.process_type == ProcessType.ROOT, (
             "Only root process can capture snapshots"
         )
-        # print("capturing snapshot")
-        snapshot = _Snapshot[ArgType, ReturnType]()
+
+        # Evict a snapshot if at capacity, or skip if the new one would
+        # be immediately redundant
+        if len(self.snapshots) >= self.max_snapshots:
+            if self._should_skip_capture(instruction_count):
+                self._last_snapshot_count = instruction_count
+                return None
+            self._evict_snapshot(incoming_count=instruction_count)
+
+        snapshot_info = SnapshotInfo(instruction_count=instruction_count)
+        snapshot = _Snapshot[ArgType, ReturnType](snapshot_info)
         snapshot_pid = safe_fork()
+
         if snapshot_pid != 0:  # root process
-            # stores the id of the fork
+            snapshot.snapshot_pid = snapshot_pid
             self.snapshots.append(snapshot)
+            self._last_snapshot_count = instruction_count
+            debug_log(
+                f"DEBUG: captured snapshot at count={instruction_count}, "
+                f"total snapshots={len(self.snapshots)}"
+            )
             return None
 
         # snapshot process
@@ -144,9 +242,69 @@ class SnapshotManager[ArgType, ReturnType]:
                 _, status = os.waitpid(replay_pid, 0)
                 snapshot.exit_code_queue.put(os.WEXITSTATUS(status))
 
-    def resume_snapshot(self, arg: ArgType) -> ReturnType:
+    def find_best_snapshot(self, target_count: int) -> int:
         """
-        Resume the snapshot with argument `arg`.
+        Find the index of the best snapshot to resume from.
+
+        Returns the index of the snapshot with the largest instruction_count
+        that is still <= target_count. Uses binary search since snapshots
+        are always sorted by instruction count.
+        """
+        if not self.snapshots:
+            return 0
+        idx = (
+            bisect.bisect_right(
+                self.snapshots,
+                target_count,
+                key=lambda s: s.info.instruction_count,
+            )
+            - 1
+        )
+        if idx == -1:
+            raise RuntimeError(
+                f"No snapshot at or before target count {target_count}. "
+                "The initial snapshot may have been killed."
+            )
+        return idx
+
+    def _evict_snapshot(self, incoming_count: int) -> None:
+        """Remove the snapshot whose removal creates the smallest gap.
+
+        For each candidate (except index 0), the merged gap after removal is
+        simply ``next_count - prev_count``.  Evict the candidate with the
+        smallest merged gap since it provides the least spacing benefit.
+        """
+        if len(self.snapshots) <= 1:
+            return
+
+        best_idx = 1
+        best_merged_gap = float("inf")
+
+        for candidate in range(1, len(self.snapshots)):
+            prev_count = self.snapshots[candidate - 1].info.instruction_count
+            if candidate == len(self.snapshots) - 1:
+                next_count = incoming_count
+            else:
+                next_count = self.snapshots[candidate + 1].info.instruction_count
+            merged_gap = next_count - prev_count
+            if merged_gap < best_merged_gap:
+                best_merged_gap = merged_gap
+                best_idx = candidate
+
+        evicted = self.snapshots.pop(best_idx)
+        debug_log(f"DEBUG: evicting snapshot at count={evicted.info.instruction_count}")
+        evicted.terminate()
+
+    def resume_snapshot(self, arg: ArgType, target_count: int) -> ReturnType:
+        """
+        Resume the best snapshot for the given target count.
+
+        Args:
+            arg: The argument to pass to the replay process
+            target_count: The target instruction count to resume near.
+
+        Returns:
+            The return value from the replay process
         """
         assert self.process_type == ProcessType.ROOT, (
             "Only root process can resume snapshots"
@@ -155,9 +313,25 @@ class SnapshotManager[ArgType, ReturnType]:
         if len(self.snapshots) == 0:
             raise RuntimeError("No snapshots to resume")
 
-        assert len(self.snapshots) == 1, "TODO: support multiple snapshots"
-        snapshot = self.snapshots[0]
-        return snapshot.resume(arg)
+        # Try the best snapshot first; if its process is dead, remove it
+        # and fall back to the next best until one works.
+        while self.snapshots:
+            snapshot_idx = self.find_best_snapshot(target_count)
+            snapshot = self.snapshots[snapshot_idx]
+            debug_log(
+                f"DEBUG: resuming from snapshot {snapshot_idx} "
+                f"at count={snapshot.info.instruction_count} for target={target_count}"
+            )
+            if not snapshot.is_alive():
+                debug_log(
+                    f"DEBUG: snapshot at count={snapshot.info.instruction_count} "
+                    f"is dead, removing and trying next"
+                )
+                self.snapshots.pop(snapshot_idx)
+                continue
+            return snapshot.resume(arg)
+
+        raise RuntimeError("All snapshot processes are dead")
 
 
 """

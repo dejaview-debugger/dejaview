@@ -165,7 +165,10 @@ class SourceFile:
 
 
 def launch_dejaview(
-    main: str | SourceFile, *rest: SourceFile, timeout: float = 10
+    main: str | SourceFile,
+    *rest: SourceFile,
+    timeout: float = 10,
+    snapshot_interval: int = 2,
 ) -> DejaViewInstance:
     """
     Launch DejaView with the given program string.
@@ -185,6 +188,8 @@ def launch_dejaview(
         "python3",
         "-m",
         "dejaview",
+        "--snapshot-interval",
+        str(snapshot_interval),
         str(tmpdir / main.name),
     ]
     d = DejaViewInstance(

@@ -116,12 +116,18 @@ class FrameCounter:
                 self.stack[-1].count += 1
 
             try:
-                # Call the user-defined handlers, remove the ones that return True
-                self.handlers = [
-                    h
-                    for h in self.handlers
-                    if not h(Event(self.count, self.stack, frame, event, arg))
-                ]
+                # Call the user-defined handlers, remove the ones that return True.
+                # Uses index-based iteration so handlers can safely append new
+                # handlers during iteration (e.g. _setup_replay_process adding
+                # timeline_head_handler after a checkpoint fork).
+                i = 0
+                while i < len(self.handlers):
+                    if self.handlers[i](
+                        Event(self.count, self.stack, frame, event, arg)
+                    ):
+                        self.handlers.pop(i)
+                    else:
+                        i += 1
 
                 # Call the sub-tracer if it exists
                 actual_sub_tracer = self.sub_tracer or sub_tracer
