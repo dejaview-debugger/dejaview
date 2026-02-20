@@ -23,8 +23,8 @@ from dejaview.patching import patching
 from dejaview.patching.setup import setup_patching
 from dejaview.patching.state_store import StateStore
 from dejaview.snapshots.snapshots import (
-    DEFAULT_CHECKPOINT_INTERVAL,
-    DEFAULT_MAX_CHECKPOINTS,
+    DEFAULT_MAX_SNAPSHOTS,
+    DEFAULT_SNAPSHOT_INTERVAL,
     SnapshotManager,
 )
 
@@ -62,7 +62,7 @@ class CounterPosition:
     """
 
     counts: List[int]
-    instruction_count: int = 0  # global instruction count for checkpoint selection
+    instruction_count: int = 0  # global instruction count for snapshot selection
 
     def decrement(self) -> None:
         """
@@ -214,15 +214,15 @@ class DejaView:
     def __init__(
         self,
         socket_client: Optional[DebugSocketClient] = None,
-        checkpoint_interval: int = DEFAULT_CHECKPOINT_INTERVAL,
-        max_checkpoints: int = DEFAULT_MAX_CHECKPOINTS,
+        snapshot_interval: int = DEFAULT_SNAPSHOT_INTERVAL,
+        max_snapshots: int = DEFAULT_MAX_SNAPSHOTS,
     ):
         self.counter = FrameCounter()
         self.snapshot_manager = SnapshotManager[
             ResumeSnapshotArg, ResumeSnapshotReturn
         ](
-            checkpoint_interval=checkpoint_interval,
-            max_checkpoints=max_checkpoints,
+            snapshot_interval=snapshot_interval,
+            max_snapshots=max_snapshots,
         )
         self.socket_client = socket_client
         self.counter.pdb_factory = lambda: self.CustomPdb(self)
@@ -230,7 +230,7 @@ class DejaView:
         self.pending_breakpoints: list[str] = []  # Store breakpoints until pdb is ready
         # self.counter.add_handler(print_handler)
 
-        # Register checkpoint handler to capture snapshots at interval
+        # Register snapshot handler to capture snapshots at interval
         self.counter.add_handler(self._on_instruction)
 
         # Set up command handler immediately if socket is available
@@ -238,33 +238,33 @@ class DejaView:
             self.socket_client.set_command_handler(self._handle_socket_command)
 
     def _on_instruction(self, event: Event) -> bool:
-        """Handler that checks if a checkpoint is needed on each line event.
+        """Handler that checks if a snapshot is needed on each line event.
 
-        Captures checkpoints immediately when the interval threshold is reached.
-        In replay processes forked from automatic checkpoints, sets up the replay.
+        Captures snapshots immediately when the interval threshold is reached.
+        In replay processes forked from automatic snapshots, sets up the replay.
 
         Returns False always (this handler is never removed).
         """
         if event.event != "line":
             return False
 
-        # Only capture checkpoints in root process during normal execution
+        # Only capture snapshots in root process during normal execution
         if self.snapshot_manager.is_replay_process:
             return False
 
-        # Check if we've passed the checkpoint interval threshold
+        # Check if we've passed the snapshot interval threshold
         count = event.count
-        interval = self.snapshot_manager.checkpoint_interval
-        last_count = self.snapshot_manager._last_checkpoint_count
+        interval = self.snapshot_manager.snapshot_interval
+        last_count = self.snapshot_manager._last_snapshot_count
 
         if count - last_count >= interval:
-            # Capture checkpoint immediately
+            # Capture snapshot immediately
             debug_log(
-                f"DEBUG: capturing checkpoint at count={count} (last was {last_count})"
+                f"DEBUG: capturing snapshot at count={count} (last was {last_count})"
             )
             arg = self.snapshot_manager.capture_snapshot(instruction_count=count)
             if arg is not None:
-                # We're in a replay process forked from this checkpoint
+                # We're in a replay process forked from this snapshot
                 self._setup_replay_process(arg)
 
         return False
@@ -314,7 +314,7 @@ class DejaView:
             request=request,
         )
 
-        # Calculate target count for checkpoint selection
+        # Calculate target count for snapshot selection
         target_count: int = 0
         if isinstance(request, ReverseToTargetRequest):
             if request.to is None:
@@ -587,8 +587,8 @@ class DejaView:
         """Set up a replay process after returning from capture_snapshot().
 
         Installs handlers, deserializes state stores, and applies debugger state.
-        Called from both setup_snapshot() (initial checkpoint) and _on_instruction()
-        (automatic checkpoints).
+        Called from both setup_snapshot() (initial snapshot) and _on_instruction()
+        (automatic snapshots).
         """
         assert self.snapshot_manager.is_replay_process
         debug_log(f"got arg {arg=}, {os.getpid()=}")

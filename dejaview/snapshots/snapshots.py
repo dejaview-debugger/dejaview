@@ -14,8 +14,8 @@ from dejaview.snapshots.safe_fork import safe_fork
 DEBUG = False
 
 # Configuration defaults
-DEFAULT_CHECKPOINT_INTERVAL = 1000  # instructions between checkpoints
-DEFAULT_MAX_CHECKPOINTS = 10  # maximum number of snapshots to keep
+DEFAULT_SNAPSHOT_INTERVAL = 1000  # instructions between snapshots
+DEFAULT_MAX_SNAPSHOTS = 10  # maximum number of snapshots to keep
 
 
 def debug_log(*args: Any) -> None:
@@ -31,8 +31,8 @@ class ProcessType(Enum):
 
 
 @dataclass
-class CheckpointInfo:
-    """Metadata about a checkpoint."""
+class SnapshotInfo:
+    """Metadata about a snapshot."""
 
     instruction_count: int  # Global instruction count when snapshot was taken
     # Note: We don't store CounterPosition here because it's passed at resume time
@@ -65,9 +65,9 @@ def test():
 class _Snapshot[ArgType, ReturnType]:
     def __init__(
         self,
-        checkpoint_info: CheckpointInfo,
+        snapshot_info: SnapshotInfo,
     ):
-        self.info = checkpoint_info
+        self.info = snapshot_info
         self.arg_queue: mp.SimpleQueue = mp.SimpleQueue()  # replay arguments
         self.exit_code_queue: mp.SimpleQueue = mp.SimpleQueue()  # exit code
         self.return_queue: mp.SimpleQueue = mp.SimpleQueue()  # return value
@@ -117,17 +117,17 @@ class _Snapshot[ArgType, ReturnType]:
 
 class SnapshotManager[ArgType, ReturnType]:
     """
-    Manages multiple snapshots (checkpoints) for efficient reverse debugging.
+    Manages multiple snapshots for efficient reverse debugging.
 
     Instead of always replaying from the beginning, we maintain multiple
     snapshots taken at strategic points during execution. When reversing,
-    we resume from the nearest checkpoint before the target position.
+    we resume from the nearest snapshot before the target position.
     """
 
     def __init__(
         self,
-        checkpoint_interval: int = DEFAULT_CHECKPOINT_INTERVAL,
-        max_checkpoints: int = DEFAULT_MAX_CHECKPOINTS,
+        snapshot_interval: int = DEFAULT_SNAPSHOT_INTERVAL,
+        max_snapshots: int = DEFAULT_MAX_SNAPSHOTS,
     ):
         # is this process the root process or a snapshot child process?
         self.process_type: ProcessType = ProcessType.ROOT
@@ -138,10 +138,10 @@ class SnapshotManager[ArgType, ReturnType]:
         # available only in root process
         self.snapshots: list[_Snapshot[ArgType, ReturnType]] = []
 
-        # Configuration for automatic checkpointing
-        self.checkpoint_interval = checkpoint_interval
-        self.max_checkpoints = max_checkpoints
-        self._last_checkpoint_count = 0
+        # Configuration for automatic snapshotting
+        self.snapshot_interval = snapshot_interval
+        self.max_snapshots = max_snapshots
+        self._last_snapshot_count = 0
 
     @property
     def is_replay_process(self) -> bool:
@@ -169,10 +169,10 @@ class SnapshotManager[ArgType, ReturnType]:
         os._exit(0)
 
     def _should_skip_capture(self, instruction_count: int) -> bool:
-        """Check if a new checkpoint at instruction_count would be wasteful.
+        """Check if a new snapshot at instruction_count would be wasteful.
 
-        If the gap from the last checkpoint to the new one is smaller than
-        all existing gaps, the new checkpoint is in the densest region and
+        If the gap from the last snapshot to the new one is smaller than
+        all existing gaps, the new snapshot is in the densest region and
         would likely be the next eviction candidate.  Skip the fork to avoid
         wasting resources.
         """
@@ -186,16 +186,16 @@ class SnapshotManager[ArgType, ReturnType]:
                 - self.snapshots[i - 1].info.instruction_count
             )
             if existing_gap <= new_gap:
-                return False  # Existing gap is smaller, new checkpoint adds value
+                return False  # Existing gap is smaller, new snapshot adds value
 
-        return True  # New gap is the smallest, checkpoint would be wasteful
+        return True  # New gap is the smallest, snapshot would be wasteful
 
     def capture_snapshot(self, instruction_count: int = 0) -> ArgType | None:
         """
         Capture a snapshot by forking the root process.
 
         Args:
-            instruction_count: The current instruction count for this checkpoint
+            instruction_count: The current instruction count for this snapshot
 
         Returns `None` in the root process, and the argument passed to
         `resume_snapshot` in the replay process.
@@ -204,25 +204,25 @@ class SnapshotManager[ArgType, ReturnType]:
             "Only root process can capture snapshots"
         )
 
-        # Evict a checkpoint if at capacity, or skip if the new one would
+        # Evict a snapshot if at capacity, or skip if the new one would
         # be immediately redundant
-        if len(self.snapshots) >= self.max_checkpoints:
+        if len(self.snapshots) >= self.max_snapshots:
             if self._should_skip_capture(instruction_count):
-                self._last_checkpoint_count = instruction_count
+                self._last_snapshot_count = instruction_count
                 return None
-            self._evict_checkpoint(incoming_count=instruction_count)
+            self._evict_snapshot(incoming_count=instruction_count)
 
-        checkpoint_info = CheckpointInfo(instruction_count=instruction_count)
-        snapshot = _Snapshot[ArgType, ReturnType](checkpoint_info)
+        snapshot_info = SnapshotInfo(instruction_count=instruction_count)
+        snapshot = _Snapshot[ArgType, ReturnType](snapshot_info)
         snapshot_pid = safe_fork()
 
         if snapshot_pid != 0:  # root process
             snapshot.snapshot_pid = snapshot_pid
             self.snapshots.append(snapshot)
-            self._last_checkpoint_count = instruction_count
+            self._last_snapshot_count = instruction_count
             debug_log(
-                f"DEBUG: captured checkpoint at count={instruction_count}, "
-                f"total checkpoints={len(self.snapshots)}"
+                f"DEBUG: captured snapshot at count={instruction_count}, "
+                f"total snapshots={len(self.snapshots)}"
             )
             return None
 
@@ -242,11 +242,11 @@ class SnapshotManager[ArgType, ReturnType]:
                 _, status = os.waitpid(replay_pid, 0)
                 snapshot.exit_code_queue.put(os.WEXITSTATUS(status))
 
-    def find_best_checkpoint(self, target_count: int) -> int:
+    def find_best_snapshot(self, target_count: int) -> int:
         """
-        Find the index of the best checkpoint to resume from.
+        Find the index of the best snapshot to resume from.
 
-        Returns the index of the checkpoint with the largest instruction_count
+        Returns the index of the snapshot with the largest instruction_count
         that is still <= target_count. Uses binary search since snapshots
         are always sorted by instruction count.
         """
@@ -260,10 +260,15 @@ class SnapshotManager[ArgType, ReturnType]:
             )
             - 1
         )
-        return max(idx, 0)
+        if idx == -1:
+            raise RuntimeError(
+                f"No snapshot at or before target count {target_count}. "
+                "The initial snapshot may have been killed."
+            )
+        return idx
 
-    def _evict_checkpoint(self, incoming_count: int) -> None:
-        """Remove the checkpoint whose removal creates the smallest gap.
+    def _evict_snapshot(self, incoming_count: int) -> None:
+        """Remove the snapshot whose removal creates the smallest gap.
 
         For each candidate (except index 0), the merged gap after removal is
         simply ``next_count - prev_count``.  Evict the candidate with the
@@ -287,9 +292,7 @@ class SnapshotManager[ArgType, ReturnType]:
                 best_idx = candidate
 
         evicted = self.snapshots.pop(best_idx)
-        debug_log(
-            f"DEBUG: evicting checkpoint at count={evicted.info.instruction_count}"
-        )
+        debug_log(f"DEBUG: evicting snapshot at count={evicted.info.instruction_count}")
         evicted.terminate()
 
     def resume_snapshot(self, arg: ArgType, target_count: int) -> ReturnType:
@@ -310,13 +313,13 @@ class SnapshotManager[ArgType, ReturnType]:
         if len(self.snapshots) == 0:
             raise RuntimeError("No snapshots to resume")
 
-        # Try the best checkpoint first; if its process is dead, remove it
+        # Try the best snapshot first; if its process is dead, remove it
         # and fall back to the next best until one works.
         while self.snapshots:
-            checkpoint_idx = self.find_best_checkpoint(target_count)
-            snapshot = self.snapshots[checkpoint_idx]
+            snapshot_idx = self.find_best_snapshot(target_count)
+            snapshot = self.snapshots[snapshot_idx]
             debug_log(
-                f"DEBUG: resuming from checkpoint {checkpoint_idx} "
+                f"DEBUG: resuming from snapshot {snapshot_idx} "
                 f"at count={snapshot.info.instruction_count} for target={target_count}"
             )
             if not snapshot.is_alive():
@@ -324,19 +327,11 @@ class SnapshotManager[ArgType, ReturnType]:
                     f"DEBUG: snapshot at count={snapshot.info.instruction_count} "
                     f"is dead, removing and trying next"
                 )
-                self.snapshots.pop(checkpoint_idx)
+                self.snapshots.pop(snapshot_idx)
                 continue
             return snapshot.resume(arg)
 
         raise RuntimeError("All snapshot processes are dead")
-
-    def get_checkpoint_count(self) -> int:
-        """Return the number of active checkpoints."""
-        return len(self.snapshots)
-
-    def get_checkpoint_info(self) -> list[CheckpointInfo]:
-        """Return info about all active checkpoints."""
-        return [s.info for s in self.snapshots]
 
 
 """

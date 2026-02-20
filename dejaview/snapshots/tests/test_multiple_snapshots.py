@@ -2,10 +2,12 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from dejaview.counting.dejaview import DejaView
 from dejaview.snapshots.snapshots import (
-    CheckpointInfo,
     ProcessType,
+    SnapshotInfo,
     SnapshotManager,
 )
 
@@ -21,17 +23,17 @@ def _make_line_event(count: int) -> MagicMock:
 def _make_mock_snapshot(instruction_count: int) -> MagicMock:
     """Create a mock _Snapshot with the given instruction count."""
     mock = MagicMock()
-    mock.info = CheckpointInfo(instruction_count=instruction_count)
+    mock.info = SnapshotInfo(instruction_count=instruction_count)
     return mock
 
 
-class TestFindBestCheckpoint:
-    """Tests for find_best_checkpoint using bisect."""
+class TestFindBestSnapshot:
+    """Tests for find_best_snapshot using bisect."""
 
     def test_empty_snapshots_returns_zero(self):
         """With no snapshots, should return 0."""
         manager: SnapshotManager = SnapshotManager()
-        assert manager.find_best_checkpoint(100) == 0
+        assert manager.find_best_snapshot(100) == 0
 
     def test_exact_match(self):
         """Should return the index of exact match."""
@@ -41,47 +43,49 @@ class TestFindBestCheckpoint:
             _make_mock_snapshot(100),
             _make_mock_snapshot(200),
         ]  # type: ignore[assignment]
-        assert manager.find_best_checkpoint(100) == 1
+        assert manager.find_best_snapshot(100) == 1
 
-    def test_between_checkpoints_picks_earlier(self):
-        """Should return the index of the checkpoint before target."""
+    def test_between_snapshots_picks_earlier(self):
+        """Should return the index of the snapshot before target."""
         manager: SnapshotManager = SnapshotManager()
         manager.snapshots = [
             _make_mock_snapshot(0),
             _make_mock_snapshot(100),
             _make_mock_snapshot(200),
         ]  # type: ignore[assignment]
-        assert manager.find_best_checkpoint(150) == 1  # 100 is before 150
+        assert manager.find_best_snapshot(150) == 1  # 100 is before 150
 
-    def test_target_before_all_checkpoints(self):
-        """Should return 0 when target is before all checkpoints."""
+    def test_target_before_all_snapshots(self):
+        """Should raise if target is before all snapshots (initial snapshot killed)."""
         manager: SnapshotManager = SnapshotManager()
         manager.snapshots = [
             _make_mock_snapshot(100),
             _make_mock_snapshot(200),
         ]  # type: ignore[assignment]
-        assert manager.find_best_checkpoint(50) == 0
+        with pytest.raises(RuntimeError, match="initial snapshot"):
+            manager.find_best_snapshot(50)
 
-    def test_target_after_all_checkpoints(self):
-        """Should return the last index when target is after all checkpoints."""
+    def test_target_after_all_snapshots(self):
+        """Should return the last index when target is after all snapshots."""
         manager: SnapshotManager = SnapshotManager()
         manager.snapshots = [
             _make_mock_snapshot(0),
             _make_mock_snapshot(100),
             _make_mock_snapshot(200),
         ]  # type: ignore[assignment]
-        assert manager.find_best_checkpoint(300) == 2
+        assert manager.find_best_snapshot(300) == 2
 
-    def test_single_checkpoint(self):
-        """With single checkpoint, should return 0 for any target."""
+    def test_single_snapshot(self):
+        """With single snapshot, return 0 for targets at or after; raise for before."""
         manager: SnapshotManager = SnapshotManager()
         manager.snapshots = [_make_mock_snapshot(100)]  # type: ignore[assignment]
-        assert manager.find_best_checkpoint(50) == 0
-        assert manager.find_best_checkpoint(100) == 0
-        assert manager.find_best_checkpoint(150) == 0
+        assert manager.find_best_snapshot(100) == 0
+        assert manager.find_best_snapshot(150) == 0
+        with pytest.raises(RuntimeError, match="initial snapshot"):
+            manager.find_best_snapshot(50)
 
 
-class TestEvictCheckpoint:
+class TestEvictSnapshot:
     """Tests for min-max-gap eviction policy."""
 
     def test_evict_noop_with_single_snapshot(self):
@@ -90,7 +94,7 @@ class TestEvictCheckpoint:
         s0 = _make_mock_snapshot(0)
         manager.snapshots = [s0]  # type: ignore[assignment]
 
-        manager._evict_checkpoint(incoming_count=1000)
+        manager._evict_snapshot(incoming_count=1000)
 
         assert len(manager.snapshots) == 1
         assert manager.snapshots[0] is s0
@@ -102,7 +106,7 @@ class TestEvictCheckpoint:
         s1 = _make_mock_snapshot(100)
         manager.snapshots = [s0, s1]  # type: ignore[assignment]
 
-        manager._evict_checkpoint(incoming_count=200)
+        manager._evict_snapshot(incoming_count=200)
 
         assert len(manager.snapshots) == 1
         assert manager.snapshots[0] is s0
@@ -119,7 +123,7 @@ class TestEvictCheckpoint:
         s4 = _make_mock_snapshot(1000)
         manager.snapshots = [s0, s1, s2, s3, s4]  # type: ignore[assignment]
 
-        manager._evict_checkpoint(incoming_count=1100)
+        manager._evict_snapshot(incoming_count=1100)
 
         assert len(manager.snapshots) == 4
         # s0 and s4 (endpoints) must survive; one of s1/s2/s3 is evicted
@@ -138,13 +142,13 @@ class TestEvictCheckpoint:
         s2 = _make_mock_snapshot(200)
         manager.snapshots = [s0, s1, s2]  # type: ignore[assignment]
 
-        manager._evict_checkpoint(incoming_count=300)
+        manager._evict_snapshot(incoming_count=300)
 
         assert len(manager.snapshots) == 2
         assert manager.snapshots[0] is s0  # initial preserved
 
-    def test_avoids_evicting_checkpoint_near_large_gap(self):
-        """Should not evict the checkpoint next to a large gap."""
+    def test_avoids_evicting_snapshot_near_large_gap(self):
+        """Should not evict the snapshot next to a large gap."""
         manager: SnapshotManager = SnapshotManager()
         # [0, 500, 600, 700] + incoming 800
         # Removing 500 would create gap 0→600 = 600 (bad)
@@ -156,7 +160,7 @@ class TestEvictCheckpoint:
         s3 = _make_mock_snapshot(700)
         manager.snapshots = [s0, s1, s2, s3]  # type: ignore[assignment]
 
-        manager._evict_checkpoint(incoming_count=800)
+        manager._evict_snapshot(incoming_count=800)
 
         assert len(manager.snapshots) == 3
         # s1 (500) should NOT be evicted — it guards the 0→500 gap
@@ -169,8 +173,8 @@ class TestCaptureSnapshotEviction:
 
     @patch("dejaview.snapshots.snapshots.safe_fork", return_value=12345)
     def test_evicts_at_max_capacity(self, mock_fork: MagicMock):
-        """When at max_checkpoints, capture should evict before adding."""
-        manager: SnapshotManager = SnapshotManager(max_checkpoints=2)
+        """When at max_snapshots, capture should evict before adding."""
+        manager: SnapshotManager = SnapshotManager(max_snapshots=2)
         s0 = _make_mock_snapshot(0)
         s1 = _make_mock_snapshot(100)
         s0.snapshot_pid = 1000
@@ -179,14 +183,14 @@ class TestCaptureSnapshotEviction:
 
         manager.capture_snapshot(instruction_count=200)
 
-        # One checkpoint should have been evicted
+        # One snapshot should have been evicted
         assert len(manager.snapshots) == 2
         assert manager.snapshots[0] is s0  # initial preserved
 
     @patch("dejaview.snapshots.snapshots.safe_fork", return_value=12345)
     def test_no_eviction_below_capacity(self, mock_fork: MagicMock):
-        """When below max_checkpoints, capture should not evict."""
-        manager: SnapshotManager = SnapshotManager(max_checkpoints=5)
+        """When below max_snapshots, capture should not evict."""
+        manager: SnapshotManager = SnapshotManager(max_snapshots=5)
         s0 = _make_mock_snapshot(0)
         s0.snapshot_pid = 1000
         manager.snapshots = [s0]  # type: ignore[assignment]
@@ -196,15 +200,15 @@ class TestCaptureSnapshotEviction:
         assert len(manager.snapshots) == 2
 
 
-class TestDejaViewCheckpointHandler:
-    """Tests for checkpoint capture handler in DejaView."""
+class TestDejaViewSnapshotHandler:
+    """Tests for snapshot capture handler in DejaView."""
 
     @patch("dejaview.snapshots.snapshots.safe_fork")
     def test_on_instruction_captures_at_interval(self, mock_fork):
         """_on_instruction should capture immediately when interval is reached."""
         mock_fork.return_value = 12345
-        dv = DejaView(checkpoint_interval=100)
-        dv.snapshot_manager._last_checkpoint_count = 0
+        dv = DejaView(snapshot_interval=100)
+        dv.snapshot_manager._last_snapshot_count = 0
 
         # Below interval - should not capture
         dv._on_instruction(_make_line_event(50))
@@ -217,19 +221,19 @@ class TestDejaViewCheckpointHandler:
 
     def test_on_instruction_skipped_in_replay(self):
         """_on_instruction should never capture in a replay."""
-        dv = DejaView(checkpoint_interval=100)
+        dv = DejaView(snapshot_interval=100)
         dv.snapshot_manager.process_type = ProcessType.REPLAY
-        dv.snapshot_manager._last_checkpoint_count = 0
+        dv.snapshot_manager._last_snapshot_count = 0
 
         # Even at interval, should not capture in replay
         dv._on_instruction(_make_line_event(200))
         assert len(dv.snapshot_manager.snapshots) == 0
 
     @patch("dejaview.snapshots.snapshots.safe_fork")
-    def test_handler_captures_multiple_checkpoints(self, mock_fork):
+    def test_handler_captures_multiple_snapshots(self, mock_fork):
         """The handler should capture at each interval threshold."""
         mock_fork.return_value = 12345
-        dv = DejaView(checkpoint_interval=50)
+        dv = DejaView(snapshot_interval=50)
 
         # Simulate line events by calling the handler directly
         for count in range(1, 101):
@@ -242,8 +246,8 @@ class TestDejaViewCheckpointHandler:
 
     def test_on_instruction_ignores_non_line_events(self):
         """_on_instruction should only act on line events."""
-        dv = DejaView(checkpoint_interval=1)
-        dv.snapshot_manager._last_checkpoint_count = 0
+        dv = DejaView(snapshot_interval=1)
+        dv.snapshot_manager._last_snapshot_count = 0
 
         # Call and return events should be ignored
         call_event = MagicMock(count=100, event="call")
@@ -258,8 +262,8 @@ class TestSkipWastefulCapture:
 
     @patch("dejaview.snapshots.snapshots.safe_fork", return_value=12345)
     def test_skips_when_new_gap_is_smallest(self, mock_fork):
-        """Should skip capture when new checkpoint is in the densest region."""
-        manager: SnapshotManager = SnapshotManager(max_checkpoints=3)
+        """Should skip capture when new snapshot is in the densest region."""
+        manager: SnapshotManager = SnapshotManager(max_snapshots=3)
         s0 = _make_mock_snapshot(0)
         s1 = _make_mock_snapshot(500)
         s2 = _make_mock_snapshot(1000)
@@ -280,7 +284,7 @@ class TestSkipWastefulCapture:
     @patch("dejaview.snapshots.snapshots.safe_fork", return_value=12345)
     def test_does_not_skip_when_existing_gap_is_smaller(self, mock_fork):
         """Should proceed with capture when an existing gap is smaller."""
-        manager: SnapshotManager = SnapshotManager(max_checkpoints=3)
+        manager: SnapshotManager = SnapshotManager(max_snapshots=3)
         s0 = _make_mock_snapshot(0)
         s1 = _make_mock_snapshot(10)
         s2 = _make_mock_snapshot(1000)

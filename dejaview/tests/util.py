@@ -168,7 +168,7 @@ def launch_dejaview(
     main: str | SourceFile,
     *rest: SourceFile,
     timeout: float = 10,
-    checkpoint_interval: int = 2,
+    snapshot_interval: int = 2,
 ) -> DejaViewInstance:
     """
     Launch DejaView with the given program string.
@@ -188,8 +188,8 @@ def launch_dejaview(
         "python3",
         "-m",
         "dejaview",
-        "--checkpoint-interval",
-        str(checkpoint_interval),
+        "--snapshot-interval",
+        str(snapshot_interval),
         str(tmpdir / main.name),
     ]
     d = DejaViewInstance(
