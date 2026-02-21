@@ -2,6 +2,7 @@ import builtins
 import os
 import random
 import socket
+import sys
 import time
 from functools import wraps
 
@@ -18,6 +19,18 @@ def mute_decorator(func):
     return wrapper
 
 
+def patch_datetime(p: Patches):
+    # Patch the class methods to memoize their results
+    import _pydatetime  # type: ignore[import-not-found]  # noqa: PLC0415
+
+    sys.modules["datetime"] = _pydatetime
+    import datetime  # noqa: PLC0415
+
+    p.patch(datetime.datetime, "now")
+    p.patch(datetime.datetime, "utcnow")
+    p.patch(datetime.date, "today")
+
+
 def setup_patching():
     p = Patches()
     p.patch(time, "time")
@@ -31,6 +44,8 @@ def setup_patching():
     p.patch(builtins, "input")
     p.patch(os, "getpid")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
-    return p
 
-    # TODO: revert to original
+    # Patch datetime
+    patch_datetime(p)
+
+    return p
