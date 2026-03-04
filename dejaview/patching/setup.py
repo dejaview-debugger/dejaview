@@ -1,4 +1,5 @@
 import builtins
+import getpass
 import os
 import random
 import socket
@@ -43,6 +44,8 @@ def setup_patching():
     p.patch(socket, "socket")
     p.patch(builtins, "input")
     p.patch(os, "getpid")
+    p.patch(getpass, "getpass")
+    p.patch(getpass, "getuser")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
 
     # Patch datetime
