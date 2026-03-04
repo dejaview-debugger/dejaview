@@ -2,12 +2,14 @@ import builtins
 import os
 import random
 import socket
+import subprocess
 import sys
 import time
 from contextlib import contextmanager
 from functools import wraps
 
 from dejaview import _memory_patch
+from dejaview.patching.custom_patchers import PopenPatcher
 from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
 
 
@@ -43,6 +45,16 @@ def patch_datetime(p: Patches):
     p.patch(datetime.date, "today")
 
 
+def patch_subprocess(p: Patches):
+    p.patch(subprocess, "run")
+    p.patch(subprocess, "Popen", PopenPatcher)
+    p.patch(subprocess, "check_output")
+    p.patch(subprocess, "check_call")
+    p.patch(subprocess, "call")
+    p.patch(subprocess, "getoutput")
+    p.patch(subprocess, "getstatusoutput")
+
+
 def setup_patching():
     p = Patches()
     p.patch(time, "time")
@@ -57,5 +69,7 @@ def setup_patching():
     p.patch(os, "getpid")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
     patch_datetime(p)
+    patch_subprocess(p)
     p.add(memory_patch())
+
     return p
