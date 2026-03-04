@@ -4,10 +4,12 @@ import random
 import socket
 import sys
 import time
+import urllib.request
 from contextlib import contextmanager
 from functools import wraps
 
 from dejaview import _memory_patch
+from dejaview.patching.custom_patchers import UrlopenPatcher
 from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
 
 
@@ -43,6 +45,11 @@ def patch_datetime(p: Patches):
     p.patch(datetime.date, "today")
 
 
+def patch_urllib(p: Patches):
+    p.patch(urllib.request, "urlopen", UrlopenPatcher)
+    p.patch(urllib.request, "urlretrieve")
+
+
 def setup_patching():
     p = Patches()
     p.patch(time, "time")
@@ -58,4 +65,7 @@ def setup_patching():
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
     patch_datetime(p)
     p.add(memory_patch())
+
+    patch_urllib(p)
+
     return p
