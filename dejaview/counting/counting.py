@@ -53,6 +53,9 @@ class FrameCounter:
         self.allow_breakpoints = True
 
     def add_handler_generator(self, handler: typing.Generator[None, Event, None]):
+        """
+        Handler receives all Event and is removed when the generator finishes.
+        """
         next(handler)
 
         def handler_wrapper(event: Event):
@@ -65,6 +68,9 @@ class FrameCounter:
         self.handlers.append(handler_wrapper)
 
     def add_handler(self, handler: typing.Callable[[Event], bool]):
+        """
+        Handler receives all Event and is removed if it returns True.
+        """
         self.handlers.append(handler)
 
     def settrace(self, func) -> None:
@@ -108,6 +114,8 @@ class FrameCounter:
             elif event == "return":
                 self.stack.pop()
                 # Returning from function also counts as a instruction
+                # Note that "return" event also triggers when leaving a frame
+                # due to an unhandled exception
                 self.count += 1
                 self.stack[-1].count += 1
             elif event == "line":

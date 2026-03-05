@@ -5,6 +5,7 @@ import sys
 import traceback
 import types
 from dataclasses import dataclass
+from random import randbytes
 from typing import (
     Any,
     Dict,
@@ -18,8 +19,9 @@ from typing import (
 )
 
 from dejaview.counting.counting import Event, FrameCounter
+from dejaview.counting.error_detection import StreamErrorDetector
 from dejaview.counting.socket_client import DebugSocketClient
-from dejaview.patching import patching
+from dejaview.patching import backdoor, patching
 from dejaview.patching.setup import setup_patching
 from dejaview.patching.state_store import StateStore
 from dejaview.snapshots.snapshots import (
@@ -197,6 +199,7 @@ class ResumeSnapshotArg:
 
     head: CounterPosition  # the current position of the root process
     debugger_state: DebuggerState
+    error_detector_reference: bytes
 
     request: RequestForReplay
 
@@ -213,10 +216,19 @@ class ResumeSnapshotReturn:
 class DejaView:
     def __init__(
         self,
+        *,
         socket_client: Optional[DebugSocketClient] = None,
         snapshot_interval: int = DEFAULT_SNAPSHOT_INTERVAL,
         max_snapshots: int = DEFAULT_MAX_SNAPSHOTS,
+        is_testing: bool = False,
     ):
+        """
+        Args:
+            socket_client: Optional client for receiving commands and sending output.
+            is_testing:
+                Are we running the DejaView test suite? If so, configure parameters to
+                be more test-friendly (e.g. shorter error detection period).
+        """
         self.counter = FrameCounter()
         self.snapshot_manager = SnapshotManager[
             ResumeSnapshotArg, ResumeSnapshotReturn
@@ -224,7 +236,13 @@ class DejaView:
             snapshot_interval=snapshot_interval,
             max_snapshots=max_snapshots,
         )
+        self.error_detector = StreamErrorDetector(
+            salt=randbytes(16),
+            # Increase frequency of error checks in testing since test code is short
+            period=2 if is_testing else StreamErrorDetector.DEFAULT_PERIOD,
+        )
         self.socket_client = socket_client
+        self.is_testing = is_testing
         self.counter.pdb_factory = lambda: self.CustomPdb(self)
         self.replay_head_reached = False
         self.pending_breakpoints: list[str] = []  # Store breakpoints until pdb is ready
@@ -311,6 +329,7 @@ class DejaView:
             function_states=StateStore.serialize(),
             head=self.get_current_position(),
             debugger_state=self.serialize_debugger_state(),
+            error_detector_reference=self.error_detector.serialize_reference(),
             request=request,
         )
 
@@ -541,8 +560,19 @@ class DejaView:
         self.counter.backup()
         self.setup_snapshot()
         self.counter.start()
+        self.counter.add_handler(self.error_detection_handler)
         self.patches = setup_patching()
         return self
+
+    def error_detection_handler(self, event: Event) -> bool:
+        data = bytearray()
+        data.extend(event.event.encode())  # event type
+        data.extend(event.frame.f_lineno.to_bytes(4))  # line number
+        if event.event == "call":
+            f_code = event.frame.f_code
+            data.extend(f_code.co_filename.encode())  # filename
+        self.error_detector.update(data)
+        return False
 
     def timeline_head_handler(
         self, head: CounterPosition
@@ -593,7 +623,10 @@ class DejaView:
         assert self.snapshot_manager.is_replay_process
         debug_log(f"got arg {arg=}, {os.getpid()=}")
         # we're a replay process
+        if self.is_testing:
+            backdoor._is_replay = True  # Let tests know we're a replay process
         self.replay_head_reached = False
+        self.error_detector.switch_to_verify(arg.error_detector_reference)
         request = arg.request
         match request:
             case ReverseToTargetRequest():

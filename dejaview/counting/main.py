@@ -6,6 +6,7 @@ import traceback
 import typing
 
 from dejaview.counting.dejaview import DejaView
+from dejaview.counting.error_detection import StreamMismatchError
 from dejaview.counting.socket_client import DebugSocketClient
 from dejaview.snapshots.snapshots import DEFAULT_SNAPSHOT_INTERVAL
 
@@ -40,7 +41,9 @@ class CustomPdb(DejaView.CustomPdb):
 @typing.no_type_check
 def main():
     opts, args = getopt.getopt(
-        sys.argv[1:], "mhc:p:", ["help", "command=", "port=", "snapshot-interval="]
+        sys.argv[1:],
+        "mhc:p:",
+        ["help", "command=", "port=", "snapshot-interval=", "testing"],
     )
 
     if not args:
@@ -51,6 +54,7 @@ def main():
         print(pdb._usage)
         sys.exit()
 
+    is_testing = any(opt in ["--testing"] for opt, optarg in opts)
     commands = [optarg for opt, optarg in opts if opt in ["-c", "--command"]]
 
     # Get port if specified
@@ -86,6 +90,7 @@ def main():
     dejaview = DejaView(
         socket_client=socket_client,
         snapshot_interval=snapshot_interval,
+        is_testing=is_testing,
     )
     dejaview.counter.pdb_factory = lambda: CustomPdb(dejaview)
     my_pdb: CustomPdb = dejaview.get_pdb()
@@ -102,6 +107,9 @@ def main():
             if my_pdb._user_requested_quit:
                 break
             print("The program finished and will be restarted")
+        except StreamMismatchError as e:
+            print(f"Replay divergence detected at count {e.count}")
+            print("Restarting the debugging session.")
         except pdb.Restart:
             print("Restarting", target, "with arguments:")
             print("\t" + " ".join(sys.argv[1:]))
