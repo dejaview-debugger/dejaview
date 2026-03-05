@@ -9,9 +9,15 @@ DejaView is a tool that adds "step back" (time-travel debugging) capabilities to
 - **Core (Python):** Located in `dejaview/`.
   - **Language:** Python 3.12+.
   - **Dependency Manager:** [uv](https://docs.astral.sh/uv/) (v0.5.0+ recommended).
+  - **Build Backend:** [maturin](https://www.maturin.rs/) (compiles the Rust extension as part of `uv sync`).
   - **Type Checking:** `mypy`.
   - **Linting:** `ruff`.
   - **Testing:** `pytest`.
+
+- **Native Extension (Rust):** Located in `src/`.
+  - **Language:** Rust (2024 edition).
+  - **Binding:** [PyO3](https://pyo3.rs/) — produces the `dejaview._memory_patch` CPython extension module.
+  - **Build:** Compiled automatically by `maturin` during `uv sync`. Requires a Rust toolchain (`rustc`/`cargo`) and a C compiler (`gcc`).
 
 - **Extension (TypeScript):** Located in `dejaview-extension/`.
   - **Runtime:** Node.js (>=18.18.0 recommended).
@@ -26,7 +32,7 @@ DejaView is a tool that adds "step back" (time-travel debugging) capabilities to
 ### Python Core (`dejaview/`)
 
 1.  **Setup Environment:**
-    Ensure `uv` is installed. Run the following from the repo root to install dependencies:
+    Ensure `uv`, a Rust toolchain (`rustc`/`cargo`), and `gcc` are installed. Run the following from the repo root to install dependencies and compile the Rust native extension:
     ```bash
     uv sync
     ```
@@ -80,9 +86,13 @@ DejaView is a tool that adds "step back" (time-travel debugging) capabilities to
 - **`dejaview/`**: The core Python package.
   - **`counting/`**: Implements deterministic frame counting and socket client for communication.
   - **`patching/`**: Handles runtime patching of Python internals/modules.
+  - **`_memory_patch/`**: Type stubs (`.pyi`) for the Rust native extension.
   - **`snapshots/`**: Implements `safe_fork` and snapshot management for state restoration.
   - **`tests/`**: Unit and integration tests.
-    - **`programs/`**: Contains sample Python programs used as targets for debugger tests.
+    - **`programs/`**: Contains sample Python programs used as targets for manual testing.
+
+- **`src/`**: Rust source for the `_memory_patch` native extension.
+  - **`lib.rs`**: Implements deterministic `id()`/`hash()` patching by hooking CPython's object allocator and `object.__hash__` slot. Ensures stable object identities across time-travel replays.
 
 - **`dejaview-extension/`**: The VS Code extension source.
   - **`src/`**: TypeScript source code (`extension.ts`, `adapter.ts`).
@@ -93,6 +103,7 @@ DejaView is a tool that adds "step back" (time-travel debugging) capabilities to
 
 ### Key Configuration Files
 - **Python:** `pyproject.toml` (Root)
+- **Rust Extension:** `Cargo.toml` (Root)
 - **Extension:** `dejaview-extension/package.json`, `dejaview-extension/tsconfig.json`
 
 ### Validation Pipelines
@@ -107,8 +118,10 @@ Ensure local changes pass these commands before pushing.
 
 ### Notes for Agents
 - **Pathing:** When working on the extension, remember that its root is `dejaview-extension/`, but the Python code it interacts with is at the repo root.
-- **Tools:** Use `uv` for all Python-related tasks. Do not try to use `pip` or `venv` directly unless specifically troubleshooting `uv` issues.
-- **Trust these instructions:** If `uv` or `npm` commands fail, check for environment issues (missing `uv` binary, old `node` version) before assuming the codebase is broken.
+- **Tools:** Use `uv` for all Python-related tasks. Never try to use `pip` or `venv` directly.
+- **Rust Extension:** The `_memory_patch` module is compiled from `src/lib.rs` via `maturin`. Keep `dejaview/_memory_patch/__init__.pyi` in sync with the Rust API.
+- **Trust these instructions:** If `uv` or `npm` commands fail, check for environment issues (missing `uv` binary, `cargo`, `gcc`, or old `node` version) before assuming the codebase is broken.
+- **Documentation:** When making architectural changes or adding new requirements, always update `README.md`, `CONTRIBUTING.md`, and `.github/copilot-instructions.md` to reflect the new state.
 
 ## Recommended Implementation Flow
 
@@ -118,7 +131,11 @@ Ensure local changes pass these commands before pushing.
     - Run `uv run ruff check` and `uv run ruff format` to lint/format.
     - Run `uv run mypy dejaview` to check types.
 
-2.  If changing Extension:
+2.  If changing Rust Extension (`src/lib.rs`):
+    - Edit files in `src/`.
+    - Run `uv` normally such as `uv run pytest`. Rust code will be recompiled automatically if source files change.
+
+3.  If changing VS Code Extension:
     - Edit files in `dejaview-extension/src/`.
     - Run `npm run compile` to build.
     - Run `npm run lint` to check style.

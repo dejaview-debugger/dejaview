@@ -20,11 +20,20 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.9.6,<0.10.0"]
-build-backend = "uv_build"
+requires = ["maturin>=1.11.5,<2.0"]
+build-backend = "maturin"
 
-[tool.uv.build-backend]
-module-root = ""
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "."
+module-name = "dejaview._memory_patch"
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "**/*.rs" },
+]
 
 [tool.ruff.lint.flake8-tidy-imports]
 # Disallow all relative imports.

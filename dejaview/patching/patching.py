@@ -4,7 +4,7 @@ import random
 import types
 from enum import Enum
 from functools import wraps
-from typing import Any, Callable, Sequence, cast
+from typing import Any, Callable, ContextManager, Sequence, cast
 from unittest.mock import patch
 
 from dejaview.patching.patcher import GenericPatcher, Patcher
@@ -134,7 +134,23 @@ def patch_func(
 
 class Patches:
     def __init__(self) -> None:
-        self.mocks: list[Any] = []
+        self.mocks: list[ContextManager[Any]] = []
+
+    def add(
+        self,
+        mock: ContextManager[Any],
+    ) -> None:
+        mock.__enter__()
+        self.mocks.append(mock)
+
+    def replace(
+        self,
+        obj: Any,
+        attribute: str,
+        new_value: Any,
+    ) -> None:
+        mock = patch.object(obj, attribute, new_value)
+        self.add(mock)
 
     def decorate(
         self,
@@ -144,9 +160,7 @@ class Patches:
     ) -> None:
         original = getattr(obj, attribute)
         mock_bind = decorator(original)
-        mock = patch.object(obj, attribute, mock_bind)
-        mock.__enter__()
-        self.mocks.append(mock)
+        self.replace(obj, attribute, mock_bind)
 
     def patch(
         self,

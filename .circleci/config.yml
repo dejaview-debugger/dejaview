@@ -12,10 +12,10 @@ jobs:
         fingerprints:
         - "e8:f4:a7:f1:4e:ca:e9:e7:f9:c4:9b:0c:a2:52:4b:41"
     - run:
-        name: Install git/ssh client
+        name: Install git/ssh client and build tools
         command: |
           apt-get update
-          apt-get install -y git openssh-client
+          apt-get install -y git openssh-client gcc
     - run:
         name: Trust git.uwaterloo.ca host key
         command: |
