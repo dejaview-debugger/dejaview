@@ -1,8 +1,8 @@
 # Contributing
 
 ## Environment
-- Install Python 3.12+ and [uv](https://docs.astral.sh/uv/).
-- Run `uv sync` once to install dependencies.
+- Install Python 3.12+, [uv](https://docs.astral.sh/uv/), a Rust toolchain (`rustc`/`cargo`), and `gcc`.
+- Run `uv sync` once to install dependencies and compile the `_memory_patch` Rust extension.
 - Run `uv run prek install` to set up pre-commit hooks.
 
 ## Workflow

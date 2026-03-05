@@ -4,8 +4,10 @@ import random
 import socket
 import sys
 import time
+from contextlib import contextmanager
 from functools import wraps
 
+from dejaview import _memory_patch
 from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
 
 
@@ -17,6 +19,16 @@ def mute_decorator(func):
             return func(*args, **kwargs)
 
     return wrapper
+
+
+# Deterministic object IDs via Rust extension patch
+@contextmanager
+def memory_patch():
+    _memory_patch.enable()
+    try:
+        yield
+    finally:
+        _memory_patch.disable()
 
 
 def patch_datetime(p: Patches):
@@ -44,8 +56,6 @@ def setup_patching():
     p.patch(builtins, "input")
     p.patch(os, "getpid")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
-
-    # Patch datetime
     patch_datetime(p)
-
+    p.add(memory_patch())
     return p
