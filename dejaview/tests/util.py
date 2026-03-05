@@ -169,9 +169,17 @@ def launch_dejaview(
     *rest: SourceFile,
     timeout: float = 10,
     snapshot_interval: int = 2,
+    stress_test: bool = True,
 ) -> DejaViewInstance:
     """
     Launch DejaView with the given program string.
+
+    Args:
+        main: The main program to debug.
+        *rest: Additional source files if needed.
+        timeout: Timeout for expecting outputs, in seconds.
+        snapshot_interval: Interval for automatic snapshotting in DejaView.
+        stress_test: Whether to enable stress testing mode in DejaView.
     """
     if isinstance(main, str):
         main = SourceFile("main.py", main)
@@ -190,8 +198,10 @@ def launch_dejaview(
         "dejaview",
         "--snapshot-interval",
         str(snapshot_interval),
+        "--testing" if stress_test else "",
         str(tmpdir / main.name),
     ]
+    command = [arg for arg in command if arg]  # Remove empty args
     d = DejaViewInstance(
         command[0],
         command[1:],
