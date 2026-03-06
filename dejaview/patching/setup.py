@@ -162,6 +162,25 @@ def patch_sys(p: Patches):
     # Note: writelines routes through self.write(), so the mute covers it.
 
 
+def patch_os(p: Patches):
+    # Patch os module non-deterministic functions
+    p.patch(os, "getpid")  # Process ID
+    p.patch(os, "getppid")  # Parent process ID
+    p.patch(os, "getuid")  # User ID
+    p.patch(os, "getgid")  # Group ID
+    p.patch(os, "geteuid")  # Effective user ID
+    p.patch(os, "getegid")  # Effective group ID
+    p.patch(os, "getenv")  # Environment variables
+    p.patch(os, "times")  # CPU times
+    p.patch(os, "uname")  # System information
+    p.patch(os, "listdir")  # Directory listing (order varies)
+    p.patch(os, "stat")  # File statistics
+    p.patch(os, "lstat")  # Symlink statistics
+    p.patch(os, "statvfs")  # Filesystem statistics
+    p.patch(os, "getcwd")  # Current working directory
+    p.patch(os, "urandom")  # Random bytes
+
+
 def setup_patching():
     p = Patches()
 
@@ -188,7 +207,6 @@ def setup_patching():
     p.patch(random.SystemRandom, "getrandbits")
     p.patch(random, "random")
     p.patch(builtins, "input")
-    p.patch(os, "getpid")
     p.patch(getpass, "getpass")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
     p.add(datetime_patch())
@@ -202,4 +220,6 @@ def setup_patching():
     # Note: shutil doesn't need patching because its sources of non-determinism
     # (e.g. os functions) are already patched.
 
+
+    patch_os(p)
     return p

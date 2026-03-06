@@ -197,27 +197,6 @@ def test_extend_head():
     d.quit()
 
 
-def test_pid():
-    d = launch_dejaview(
-        """
-        import os                   # Line 1
-        pid1 = os.getpid()          # Line 2
-        assert pid1 == os.getpid()  # Line 3
-        """
-    )
-
-    d.assert_line_number(1)
-    d.sendline("n")
-    d.assert_line_number(2)
-    d.sendline("n")
-    d.assert_line_number(3)
-    d.sendline("back")
-    d.assert_line_number(2)
-    d.sendline("c")
-    assert "AssertionError" not in d.expect_prompt()
-    d.quit()
-
-
 def test_reverse_continue():
     d = launch_dejaview(
         """

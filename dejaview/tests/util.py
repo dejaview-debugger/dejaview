@@ -9,7 +9,7 @@ from enum import Enum
 from functools import cache
 from pathlib import Path
 from textwrap import dedent
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
 
 import pexpect  # type: ignore[import-untyped]
 
@@ -354,11 +354,14 @@ class PropertyTester:
                 )
 
     @staticmethod
-    def test_idempotence_property(d: DejaViewInstance, forward_steps: int = 1) -> None:
+    def test_idempotence_property(
+        d: DejaViewInstance, forward_steps: int = 1
+    ) -> List[DebuggerState]:
         """
         Test that stepping forward -> back -> forward reaches the same state.
         The states at each step should match between the first and second
         forward passes.
+        Returns the list of states captured during the second forward pass.
 
         The test instance should NOT reach the end of the program while doing
         forward steps, otherwise the program restart will lead to test fails.
@@ -406,3 +409,69 @@ class PropertyTester:
                 f"First pass:\n{state1.console_output}\n\n"
                 f"Second pass:\n{state2.console_output}"
             )
+        return second_pass_states
+
+
+def verify_deterministic_memoized_value_util(
+    imports: str,
+    expr: str,
+    # Default to first line of output
+    get_value: Callable[[str], Any] = lambda output: output.strip().split()[1],
+    compare: Optional[Callable[[Any, Any], bool]] = None,
+) -> None:
+    """
+    Test that a side-effecting expression is deterministic when replayed.
+
+    Args:
+        imports: Import statements needed (e.g. "import os").
+        expr: The expression to evaluate (e.g. "os.getpid()").
+        get_value: Optional function to parse the value from the debugger output.
+        compare: Optional function to compare two successive values (v1, v2).
+                 If provided, asserts compare(v1, v2) is True.
+                 Commonly used to check v1 != v2 or v1 < v2 for unique/monotonic values.
+    """
+    script = f"""
+        {imports}                       # Line 1
+        print()                         # Line 2
+        print({expr})                   # Line 3
+        print({expr})                   # Line 4
+        print()                         # Line 5
+        """
+    d = launch_dejaview(script)
+
+    # 1. Advance to the first expression (Line 3)
+    d.assert_line_number(1)
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("n")
+    d.assert_line_number(3)
+
+    # 2. Execute Line 3 -> Line 4 -> Line 5 twice to ensure idempotence (end at line 5)
+    states_pass1 = PropertyTester.test_idempotence_property(d, forward_steps=2)
+
+    # 3. Capture the first value
+    output_line_3 = states_pass1[0].console_output
+    val1 = get_value(output_line_3)
+
+    # 4. Step back from Line 5 -> Line 4 so the next idempotence test
+    d.send_command(DebugCommand.BACK)
+
+    # 5. Execute Line 4 -> Line 5 twice to ensure idempotence (end at line 5)
+    states_pass2 = PropertyTester.test_idempotence_property(d, forward_steps=1)
+
+    # 6. Capture the second value
+    output_line_4 = states_pass2[0].console_output
+    val2 = get_value(output_line_4)
+
+    # 7. Verify relation between values if a comparator is provided
+    if compare:
+        assert compare(val1, val2), f"Comparison failed for {val1} and {val2}"
+
+    print("value 1 and 2 output:")
+    print(f"Value 1: {val1}")
+    print(f"Value 2: {val2}")
+    print()
+    print(f"{output_line_3}")
+    print()
+    print(f"{output_line_4}")
+    d.quit()
