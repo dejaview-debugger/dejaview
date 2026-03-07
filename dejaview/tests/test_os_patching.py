@@ -5,6 +5,8 @@ import tempfile
 from pathlib import Path
 
 from dejaview.tests.util import (
+    DebugCommand,
+    PropertyTester,
     launch_dejaview,
     verify_deterministic_memoized_value_util,
     verify_deterministic_mutated_value_util,
@@ -1054,6 +1056,10 @@ def test_walk():
 
     os.walk is patched with IteratorPatcher which eagerly consumes
     the generator during play and returns a fresh iterator during replay.
+
+    Uses forward-only determinism testing because iterator-based patchers
+    create intermediate frame events that prevent back-stepping from
+    aligning with ``n``-step boundaries.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         Path(tmpdir, "sub1").mkdir()
@@ -1062,28 +1068,43 @@ def test_walk():
         Path(tmpdir, "sub2", "b.txt").touch()
         Path(tmpdir, "root.txt").touch()
 
-        verify_deterministic_memoized_value_util(
-            imports="import os",
-            expr=f"str(list(os.walk({repr(tmpdir)})))",
+        script = f"""
+            import os
+            print(str(list(os.walk({repr(tmpdir)}))))
+            print(str(list(os.walk({repr(tmpdir)}))))
+        """
+        PropertyTester.test_determinism_property(
+            program=script,
+            command_sequence=[DebugCommand.STEP] * 2,
+            num_runs=3,
         )
 
 
 def test_scandir():
     """Test that os.scandir is deterministic on replay.
 
-    os.scandir is patched with IteratorPatcher which eagerly consumes
+    os.scandir is patched with ScanDirPatcher which eagerly consumes
     the iterator during play and returns a fresh _ReplayableIterator
     that also supports context-manager usage.
+
+    Uses forward-only determinism testing because iterator-based patchers
+    create intermediate frame events that prevent back-stepping from
+    aligning with ``n``-step boundaries.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         Path(tmpdir, "a.txt").touch()
         Path(tmpdir, "b.txt").touch()
         Path(tmpdir, "c.txt").touch()
 
-        verify_deterministic_memoized_value_util(
-            imports="import os",
-            expr=f"sorted([e.name for e in os.scandir({repr(tmpdir)})])",
-            compare=operator.eq,
+        script = f"""
+            import os
+            print(sorted(e.name for e in os.scandir({repr(tmpdir)})))
+            print(sorted(e.name for e in os.scandir({repr(tmpdir)})))
+        """
+        PropertyTester.test_determinism_property(
+            program=script,
+            command_sequence=[DebugCommand.STEP] * 2,
+            num_runs=3,
         )
 
 

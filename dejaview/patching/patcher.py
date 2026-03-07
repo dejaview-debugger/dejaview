@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
 import tblib  # type: ignore[import-untyped]
 import tblib.pickling_support  # type: ignore[import-untyped]
@@ -100,10 +100,16 @@ class _ReplayableIterator:
     Used by ``IteratorPatcher`` so that patched generators (``os.walk``,
     ``os.fwalk``) and context-manager iterators (``os.scandir``) can be
     replayed from a stored list without re-executing the original function.
+
+    The class delegates to a C-level ``list_iterator`` for both
+    ``__iter__`` and ``__next__``, which prevents ``pdb``'s trace hook
+    from stopping on every ``__next__`` call inside list comprehensions
+    (CPython 3.12 PEP 709) and avoids extra frame events that would
+    confuse the step-back snapshot mechanism.
     """
 
     def __init__(self, items: list[Any]) -> None:
-        self._iter = iter(items)
+        self._iter: Iterator[Any] = iter(items)
 
     def __iter__(self) -> "_ReplayableIterator":
         return self

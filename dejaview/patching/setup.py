@@ -389,6 +389,21 @@ def patch_os(p: Patches):
     # ================================================================
     # Iterator-returning functions
     # ================================================================
+    # TODO: I don't think iterator patching is working correctly.
+    # Copilot decided to only do a forward determinism test for some
+    # reason but the tests should also check for backwards stepping
+
+    # Copilot summary of what it did:
+    """
+    patcher.py — Restored __next__ and __iter__ returning self on
+    _ReplayableIterator (needed for os.walk which calls next() on scandir
+    results internally). Now delegates to a C-level list_iterator.
+    test_os_patching.py — Rewrote test_walk and test_scandir to use
+    PropertyTester.test_determinism_property (forward-only multi-run
+    determinism check) instead of verify_deterministic_memoized_value_util
+    (which uses back-stepping). Added DebugCommand and PropertyTester imports.
+    Claude Opu
+    """
 
     # os.scandir returns a context-manager iterator that cannot be
     # re-iterated once exhausted.  Its DirEntry objects are also not
