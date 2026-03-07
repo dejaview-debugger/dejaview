@@ -7,173 +7,206 @@ from pathlib import Path
 from dejaview.tests.util import (
     launch_dejaview,
     verify_deterministic_memoized_value_util,
+    verify_deterministic_mutated_value_util,
 )
+
+# ==============================================================================
+# Process / user identity
+# ==============================================================================
 
 
 def test_getpid():
     """Test that os.getpid is deterministic."""
-    import_stmt = "import os"
-    expr = "os.getpid()"
-
     verify_deterministic_memoized_value_util(
-        imports=import_stmt,
-        expr=expr,
+        imports="import os",
+        expr="os.getpid()",
         compare=operator.eq,
     )
 
 
 def test_getppid():
     """Test that os.getppid is deterministic."""
-    import_stmt = "import os"
-    expr = "os.getppid()"
-
     verify_deterministic_memoized_value_util(
-        imports=import_stmt,
-        expr=expr,
+        imports="import os",
+        expr="os.getppid()",
         compare=operator.eq,
     )
 
 
 def test_getuid():
     """Test that os.getuid is deterministic."""
-    import_stmt = "import os"
-    expr = "os.getuid()"
-
     verify_deterministic_memoized_value_util(
-        imports=import_stmt,
-        expr=expr,
+        imports="import os",
+        expr="os.getuid()",
         compare=operator.eq,
     )
 
 
 def test_getgid():
     """Test that os.getgid is deterministic."""
-    import_stmt = "import os"
-    expr = "os.getgid()"
-
     verify_deterministic_memoized_value_util(
-        imports=import_stmt,
-        expr=expr,
+        imports="import os",
+        expr="os.getgid()",
         compare=operator.eq,
     )
 
 
 def test_geteuid():
     """Test that os.geteuid is deterministic."""
-    import_stmt = "import os"
-    expr = "os.geteuid()"
-
     verify_deterministic_memoized_value_util(
-        imports=import_stmt,
-        expr=expr,
+        imports="import os",
+        expr="os.geteuid()",
         compare=operator.eq,
     )
 
 
 def test_getegid():
     """Test that os.getegid is deterministic."""
-    import_stmt = "import os"
-    expr = "os.getegid()"
-
     verify_deterministic_memoized_value_util(
-        imports=import_stmt,
-        expr=expr,
+        imports="import os",
+        expr="os.getegid()",
         compare=operator.eq,
     )
+
+
+# The unpatched version of `os.getlogin()` fails in WSL so I am
+# commenting this test out.
+# def test_getlogin():
+#     """Test that os.getlogin is deterministic."""
+#     verify_deterministic_memoized_value_util(
+#         imports="import os",
+#         expr="os.getlogin()",
+#     )
+
+
+def test_getpgid():
+    """Test that os.getpgid is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.getpgid(os.getpid())",
+        compare=operator.eq,
+    )
+
+
+def test_getpgrp():
+    """Test that os.getpgrp is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.getpgrp()",
+        compare=operator.eq,
+    )
+
+
+def test_getpriority():
+    """Test that os.getpriority is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.getpriority(os.PRIO_PROCESS, 0)",
+        compare=operator.eq,
+    )
+
+
+def test_getresgid():
+    """Test that os.getresgid is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.getresgid()",
+        compare=operator.eq,
+    )
+
+
+def test_getresuid():
+    """Test that os.getresuid is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.getresuid()",
+        compare=operator.eq,
+    )
+
+
+def test_getsid():
+    """Test that os.getsid is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.getsid(0)",
+        compare=operator.eq,
+    )
+
+
+def test_getgroups():
+    """Test that os.getgroups is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.getgroups()",
+        compare=operator.eq,
+    )
+
+
+def test_getgrouplist():
+    """Test that os.getgrouplist is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os, pwd",
+        expr="os.getgrouplist(pwd.getpwuid(os.getuid()).pw_name, os.getgid())",
+        compare=operator.eq,
+    )
+
+
+# ==============================================================================
+# Environment
+# ==============================================================================
 
 
 def test_getenv():
     """Test that os.getenv is deterministic.
 
-    idea is to use getenv to find the environmental variables
-    then change the environment variable and find the environment
-    variable again to see if it changed
+    Reads an env var, changes it, reads again, then steps back and
+    replays to verify both reads produce the same output.
     """
     env_var = "_DEJAVIEW_TEST_GETENV"
     original_value = "hello_dejaview"
 
-    # Set the env var so the subprocess inherits it, and save any pre-existing value
     old_value = _real_os.environ.get(env_var)
     _real_os.environ[env_var] = original_value
 
     try:
-        d = launch_dejaview(
-            f"""
-            import os                                      # Line 1
-            print(os.getenv({repr(env_var)}))              # Line 2
-            os.environ[{repr(env_var)}] = "changed_value"  # Line 3
-            print(os.getenv({repr(env_var)}))              # Line 4
-            print()                                        # Line 5
-            """
+        before, after = verify_deterministic_mutated_value_util(
+            imports="import os",
+            read_stmts=f"print(os.getenv({repr(env_var)}))",
+            mutate_stmts=f"os.environ[{repr(env_var)}] = 'changed_value'",
         )
-
-        def get_printed_value(step_output: str) -> str:
-            """Extract the printed value from pdb step output.
-
-            The printed output appears on the second line (index 1) of the step output.
-            """
-            lines = step_output.strip().split("\n")
-            return lines[1].strip()
-
-        # 1. Advance to line 2
-        d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
-
-        # 2. Execute line 2: print(os.getenv(...)) -> value_before
-        d.sendline("n")
-        step_out = d.assert_line_number(3)
-        value_before = get_printed_value(step_out)
-
-        # 3. Execute line 3 (change env var), then line 4 -> value_after
-        d.sendline("n")
-        d.assert_line_number(4)
-        d.sendline("n")
-        step_out = d.assert_line_number(5)
-        value_after = get_printed_value(step_out)
-
-        # 4. Verify the env var was read correctly
-        assert value_before == original_value, (
-            f"Expected {original_value!r}, got {value_before!r}"
-        )
-        assert value_after == "changed_value", (
-            f"Expected 'changed_value', got {value_after!r}"
-        )
-
-        # 5. Step back to line 2 and replay to verify determinism
-        d.sendline("back")
-        d.assert_line_number(4)
-        d.sendline("back")
-        d.assert_line_number(3)
-        d.sendline("back")
-        d.assert_line_number(2)
-
-        # Re-execute line 2
-        d.sendline("n")
-        step_out = d.assert_line_number(3)
-        value_before_replay = get_printed_value(step_out)
-        assert value_before == value_before_replay, (
-            f"getenv before mismatch: {value_before!r} vs {value_before_replay!r}"
-        )
-
-        # Re-execute line 3 (change env var), then line 4
-        d.sendline("n")
-        d.assert_line_number(4)
-        d.sendline("n")
-        step_out = d.assert_line_number(5)
-        value_after_replay = get_printed_value(step_out)
-        assert value_after == value_after_replay, (
-            f"getenv after mismatch: {value_after!r} vs {value_after_replay!r}"
-        )
-
-        d.quit()
-
+        assert before == original_value, f"Expected {original_value!r}, got {before!r}"
+        assert after == "changed_value", f"Expected 'changed_value', got {after!r}"
     finally:
-        # Restore the environment variable to its original state
         if old_value is None:
             _real_os.environ.pop(env_var, None)
         else:
             _real_os.environ[env_var] = old_value
+
+
+def test_getenvb():
+    """Test that os.getenvb is deterministic."""
+    env_var = "_DEJAVIEW_TEST_GETENVB"
+    original_value = "hello_bytes"
+
+    old_value = _real_os.environ.get(env_var)
+    _real_os.environ[env_var] = original_value
+
+    try:
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"os.getenvb({repr(env_var.encode())})",
+            compare=operator.eq,
+        )
+    finally:
+        if old_value is None:
+            _real_os.environ.pop(env_var, None)
+        else:
+            _real_os.environ[env_var] = old_value
+
+
+# ==============================================================================
+# System information
+# ==============================================================================
 
 
 def test_times():
@@ -192,184 +225,91 @@ def test_uname():
     verify_deterministic_memoized_value_util(imports=import_stmt, expr=expr)
 
 
+def test_cpu_count():
+    """Test that os.cpu_count is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.cpu_count()",
+        compare=operator.eq,
+    )
+
+
+def test_getloadavg():
+    """Test that os.getloadavg is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.getloadavg()",
+    )
+
+
+def test_confstr():
+    """Test that os.confstr is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.confstr('CS_PATH')",
+        compare=operator.eq,
+    )
+
+
+def test_sysconf():
+    """Test that os.sysconf is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.sysconf('SC_PAGE_SIZE')",
+        compare=operator.eq,
+    )
+
+
+# ==============================================================================
+# Filesystem queries
+# ==============================================================================
+
+
 def test_listdir():
     """Test that os.listdir is deterministic."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Create some initial files in tmpdir
         Path(tmpdir, "a.txt").touch()
         Path(tmpdir, "b.txt").touch()
 
-        d = launch_dejaview(
-            f"""
-            import os                                                        # Line 1
-            print(sorted(os.listdir({repr(tmpdir)})))                        # Line 2
-            open(os.path.join({repr(tmpdir)}, 'new_file.txt'), 'w').close()  # Line 3
-            print(sorted(os.listdir({repr(tmpdir)})))                        # Line 4
-            print()                                                          # Line 5
-            """
+        before, after = verify_deterministic_mutated_value_util(
+            imports="import os",
+            read_stmts=f"print(sorted(os.listdir({repr(tmpdir)})))",
+            mutate_stmts=(
+                f"open(os.path.join({repr(tmpdir)}, 'new_file.txt'), 'w').close()"
+            ),
+            parse_value=lambda out: ast.literal_eval(
+                out.strip().split("\n")[1].strip()
+            ),
         )
-
-        def get_printed_listing(step_output: str) -> list[str]:
-            """Extract the printed listing from pdb step output.
-
-            The printed output is a Python list repr like "['a.txt', 'b.txt']".
-            It appears on the second line (index 1) of the step output.
-            """
-            lines = step_output.strip().split("\n")
-            return ast.literal_eval(lines[1].strip())
-
-        # 1. Advance to line 2
-        d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
-
-        # 2. Execute line 2: print(sorted(os.listdir(...))) -> listing_before
-        d.sendline("n")
-        step_out = d.assert_line_number(3)
-        listing_before = get_printed_listing(step_out)
-
-        # 3. Execute line 3 (create file), then line 4 -> listing_after
-        d.sendline("n")
-        d.assert_line_number(4)
-        d.sendline("n")
-        step_out = d.assert_line_number(5)
-        listing_after = get_printed_listing(step_out)
-
-        # 4. Go back to line 2 and re-execute lines 2-4 to verify
-        #    the same output and order is reproduced on replay
-        d.sendline("back")
-        d.assert_line_number(4)
-        d.sendline("back")
-        d.assert_line_number(3)
-        d.sendline("back")
-        d.assert_line_number(2)
-
-        # Re-execute line 2
-        d.sendline("n")
-        step_out = d.assert_line_number(3)
-        listing_before_replay = get_printed_listing(step_out)
-        assert listing_before == listing_before_replay, (
-            f"Listing before mismatch: {listing_before} vs {listing_before_replay}"
+        assert set(before).issubset(set(after)), (
+            f"Expected {before} to be a subset of {after}"
         )
-
-        # Re-execute line 3 (create file), then line 4
-        d.sendline("n")
-        d.assert_line_number(4)
-        d.sendline("n")
-        step_out = d.assert_line_number(5)
-        listing_after_replay = get_printed_listing(step_out)
-        assert listing_after == listing_after_replay, (
-            f"Listing after mismatch: {listing_after} vs {listing_after_replay}"
-        )
-
-        # 5. Verify that files from line 4 are a superset of files from line 2
-        #    (since we added a file in line 3)
-        assert set(listing_before).issubset(set(listing_after)), (
-            f"Expected {listing_before} to be a subset of {listing_after}"
-        )
-        assert "new_file.txt" in listing_after, (
-            f"Expected 'new_file.txt' in {listing_after}"
-        )
-
-        d.quit()
+        assert "new_file.txt" in after, f"Expected 'new_file.txt' in {after}"
 
 
 def test_stat():
     """Test that os.stat is deterministic.
 
-    idea is to change the stat of the file and see if it changes on replay
+    Changes the file's permissions and size, then verifies that stepping
+    back and replaying os.stat produces the same metadata both times.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         test_file = Path(tmpdir, "test.txt")
         test_file.write_text("hello")
-        # Set initial permissions to a known state
         _real_os.chmod(str(test_file), 0o644)
+        fp = repr(str(test_file))
 
-        d = launch_dejaview(
-            f"""
-            import os                                                       # Line 1
-            s = os.stat({repr(str(test_file))})                             # Line 2
-            print((s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink))   # Line 3
-            os.chmod({repr(str(test_file))}, 0o755)                         # Line 4
-            with open({repr(str(test_file))}, 'a') as f: f.write(' world')  # Line 5
-            s = os.stat({repr(str(test_file))})                             # Line 6
-            print((s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink))   # Line 7
-            print()                                                         # Line 8
-            """
+        verify_deterministic_mutated_value_util(
+            imports="import os",
+            read_stmts=[
+                f"s = os.stat({fp})",
+                "print((s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink))",
+            ],
+            mutate_stmts=[
+                f"os.chmod({fp}, 0o755)",
+                f"with open({fp}, 'a') as f: f.write(' world')",
+            ],
         )
-
-        def get_printed_value(step_output: str) -> str:
-            """Extract the printed value from pdb step output.
-
-            The printed output appears on the second line (index 1) of the step output.
-            """
-            lines = step_output.strip().split("\n")
-            return lines[1].strip()
-
-        # 1. Advance to line 3 (first print of stat metadata)
-        d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
-        d.sendline("n")
-        d.assert_line_number(3)
-
-        # 2. Execute line 3: print stat metadata -> stat_before
-        d.sendline("n")
-        step_out = d.assert_line_number(4)
-        stat_before = get_printed_value(step_out)
-
-        # 3. Execute lines 4-5 (chmod + write), line 6
-        #    (re-stat), line 7 (print) -> stat_after
-        d.sendline("n")
-        d.assert_line_number(5)
-        d.sendline("n")
-        d.assert_line_number(6)
-        d.sendline("n")
-        d.assert_line_number(7)
-        d.sendline("n")
-        step_out = d.assert_line_number(8)
-        stat_after = get_printed_value(step_out)
-
-        # 4. Verify the metadata actually changed (mode and size differ)
-        assert stat_before != stat_after, (
-            f"Expected stat metadata to change, but both are {stat_before}"
-        )
-
-        # 5. Step back to line 3 and replay to verify determinism
-        d.sendline("back")
-        d.assert_line_number(7)
-        d.sendline("back")
-        d.assert_line_number(6)
-        d.sendline("back")
-        d.assert_line_number(5)
-        d.sendline("back")
-        d.assert_line_number(4)
-        d.sendline("back")
-        d.assert_line_number(3)
-
-        # Re-execute line 3
-        d.sendline("n")
-        step_out = d.assert_line_number(4)
-        stat_before_replay = get_printed_value(step_out)
-        assert stat_before == stat_before_replay, (
-            f"stat before mismatch: {stat_before} vs {stat_before_replay}"
-        )
-
-        # Re-execute lines 4-7
-        d.sendline("n")
-        d.assert_line_number(5)
-        d.sendline("n")
-        d.assert_line_number(6)
-        d.sendline("n")
-        d.assert_line_number(7)
-        d.sendline("n")
-        step_out = d.assert_line_number(8)
-        stat_after_replay = get_printed_value(step_out)
-        assert stat_after == stat_after_replay, (
-            f"stat after mismatch: {stat_after} vs {stat_after_replay}"
-        )
-
-        d.quit()
 
 
 def test_stat_symlink():
@@ -503,95 +443,26 @@ def test_stat_symlink():
 def test_lstat():
     """Test that os.lstat is deterministic.
 
-    Creates a temporary file, lstats it, changes permissions and size,
-    lstats again, then steps back and replays to verify determinism.
+    Changes permissions and size, then verifies that stepping back and
+    replaying os.lstat produces the same metadata both times.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         test_file = Path(tmpdir, "test.txt")
         test_file.write_text("hello")
         _real_os.chmod(str(test_file), 0o644)
+        fp = repr(str(test_file))
 
-        d = launch_dejaview(
-            f"""
-            import os                                                       # Line 1
-            s = os.lstat({repr(str(test_file))})                            # Line 2
-            print((s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink))   # Line 3
-            os.chmod({repr(str(test_file))}, 0o755)                         # Line 4
-            with open({repr(str(test_file))}, 'a') as f: f.write(' world')  # Line 5
-            s = os.lstat({repr(str(test_file))})                            # Line 6
-            print((s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink))   # Line 7
-            print()                                                         # Line 8
-            """
+        verify_deterministic_mutated_value_util(
+            imports="import os",
+            read_stmts=[
+                f"s = os.lstat({fp})",
+                "print((s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink))",
+            ],
+            mutate_stmts=[
+                f"os.chmod({fp}, 0o755)",
+                f"with open({fp}, 'a') as f: f.write(' world')",
+            ],
         )
-
-        def get_printed_value(step_output: str) -> str:
-            """Extract the printed value from pdb step output."""
-            lines = step_output.strip().split("\n")
-            return lines[1].strip()
-
-        # 1. Advance to line 3 (first print of lstat metadata)
-        d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
-        d.sendline("n")
-        d.assert_line_number(3)
-
-        # 2. Execute line 3: print lstat metadata -> lstat_before
-        d.sendline("n")
-        step_out = d.assert_line_number(4)
-        lstat_before = get_printed_value(step_out)
-
-        # 3. Execute lines 4-5 (chmod + write), line 6 (re-lstat), line 7 (print)
-        d.sendline("n")
-        d.assert_line_number(5)
-        d.sendline("n")
-        d.assert_line_number(6)
-        d.sendline("n")
-        d.assert_line_number(7)
-        d.sendline("n")
-        step_out = d.assert_line_number(8)
-        lstat_after = get_printed_value(step_out)
-
-        # 4. Verify the metadata actually changed
-        assert lstat_before != lstat_after, (
-            f"Expected lstat metadata to change, but both are {lstat_before}"
-        )
-
-        # 5. Step back to line 3 and replay to verify determinism
-        d.sendline("back")
-        d.assert_line_number(7)
-        d.sendline("back")
-        d.assert_line_number(6)
-        d.sendline("back")
-        d.assert_line_number(5)
-        d.sendline("back")
-        d.assert_line_number(4)
-        d.sendline("back")
-        d.assert_line_number(3)
-
-        # Re-execute line 3
-        d.sendline("n")
-        step_out = d.assert_line_number(4)
-        lstat_before_replay = get_printed_value(step_out)
-        assert lstat_before == lstat_before_replay, (
-            f"lstat before mismatch: {lstat_before} vs {lstat_before_replay}"
-        )
-
-        # Re-execute lines 4-7
-        d.sendline("n")
-        d.assert_line_number(5)
-        d.sendline("n")
-        d.assert_line_number(6)
-        d.sendline("n")
-        d.assert_line_number(7)
-        d.sendline("n")
-        step_out = d.assert_line_number(8)
-        lstat_after_replay = get_printed_value(step_out)
-        assert lstat_after == lstat_after_replay, (
-            f"lstat after mismatch: {lstat_after} vs {lstat_after_replay}"
-        )
-
-        d.quit()
 
 
 def test_lstat_symlink():
@@ -724,86 +595,40 @@ def test_lstat_symlink():
         d.quit()
 
 
+def test_fstat():
+    """Test that os.fstat is deterministic."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "fstat_test.txt")
+        test_file.write_text("hello")
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"os.fstat(os.open({repr(str(test_file))}, os.O_RDONLY))",
+        )
+
+
 def test_statvfs():
     """Test that os.statvfs is deterministic.
 
-    Creates a temporary file, calls os.statvfs on it, writes more data to
-    change disk usage, calls statvfs again, then steps back and replays
-    to verify determinism.
+    Writes data to change disk usage, then verifies that stepping back
+    and replaying os.statvfs produces the same result both times.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         test_file = Path(tmpdir, "test.txt")
         test_file.write_text("hello")
+        fp = repr(str(test_file))
 
-        d = launch_dejaview(
-            f"""
-            import os
-            s = os.statvfs({repr(str(test_file))})
-            print(tuple(s))
-            with open({repr(str(test_file))}, 'a') as f: f.write('x' * 10000)
-            s2 = os.statvfs({repr(str(test_file))})
-            print(tuple(s2))
-            print()
-            """
+        verify_deterministic_mutated_value_util(
+            imports="import os",
+            read_stmts=[
+                f"s = os.statvfs({fp})",
+                "print(tuple(s))",
+            ],
+            mutate_stmts=f"with open({fp}, 'a') as f: f.write('x' * 10000)",
+            # Free-block counts can be volatile on busy systems, so we don't
+            # require the two reads to differ — the replay must still match.
+            assert_changed=False,
         )
-
-        def get_printed_value(step_output: str) -> str:
-            """Extract the printed value from pdb step output."""
-            lines = step_output.strip().split("\n")
-            return lines[1].strip()
-
-        # 1. Advance to line 3 (first print of statvfs)
-        d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
-        d.sendline("n")
-        d.assert_line_number(3)
-
-        # 2. Execute line 3: print statvfs -> statvfs_before
-        d.sendline("n")
-        step_out = d.assert_line_number(4)
-        statvfs_before = get_printed_value(step_out)
-
-        # 3. Execute line 4 (write data), line 5 (re-statvfs), line 6 (print)
-        d.sendline("n")
-        d.assert_line_number(5)
-        d.sendline("n")
-        d.assert_line_number(6)
-        d.sendline("n")
-        step_out = d.assert_line_number(7)
-        statvfs_after = get_printed_value(step_out)
-
-        # 4. Step back to line 3 and replay to verify determinism
-        d.sendline("back")
-        d.assert_line_number(6)
-        d.sendline("back")
-        d.assert_line_number(5)
-        d.sendline("back")
-        d.assert_line_number(4)
-        d.sendline("back")
-        d.assert_line_number(3)
-
-        # Re-execute line 3
-        d.sendline("n")
-        step_out = d.assert_line_number(4)
-        statvfs_before_replay = get_printed_value(step_out)
-        assert statvfs_before == statvfs_before_replay, (
-            f"statvfs before mismatch: {statvfs_before} vs {statvfs_before_replay}"
-        )
-
-        # Re-execute lines 4-6
-        d.sendline("n")
-        d.assert_line_number(5)
-        d.sendline("n")
-        d.assert_line_number(6)
-        d.sendline("n")
-        step_out = d.assert_line_number(7)
-        statvfs_after_replay = get_printed_value(step_out)
-        assert statvfs_after == statvfs_after_replay, (
-            f"statvfs after mismatch: {statvfs_after} vs {statvfs_after_replay}"
-        )
-
-        d.quit()
 
 
 def test_statvfs_symlink():
@@ -903,80 +728,168 @@ def test_statvfs_symlink():
         d.quit()
 
 
+def test_fstatvfs():
+    """Test that os.fstatvfs is deterministic."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "fstatvfs_test.txt")
+        test_file.write_text("hello")
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"tuple(os.fstatvfs(os.open({repr(str(test_file))}, os.O_RDONLY)))",
+        )
+
+
+def test_readlink():
+    """Test that os.readlink is deterministic."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = Path(tmpdir, "target.txt")
+        target.write_text("hello")
+        link = Path(tmpdir, "link.txt")
+        link.symlink_to(target)
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"os.readlink({repr(str(link))})",
+            compare=operator.eq,
+        )
+
+
+def test_access():
+    """Test that os.access is deterministic."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "access_test.txt")
+        test_file.write_text("hello")
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"os.access({repr(str(test_file))}, os.R_OK)",
+            compare=operator.eq,
+        )
+
+
+def test_fpathconf():
+    """Test that os.fpathconf is deterministic."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "fpathconf_test.txt")
+        test_file.write_text("hello")
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=(
+                f"os.fpathconf(os.open({repr(str(test_file))},"
+                f" os.O_RDONLY), 'PC_NAME_MAX')"
+            ),
+            compare=operator.eq,
+        )
+
+
+def test_pathconf():
+    """Test that os.pathconf is deterministic."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "pathconf_test.txt")
+        test_file.write_text("hello")
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"os.pathconf({repr(str(test_file))}, 'PC_NAME_MAX')",
+            compare=operator.eq,
+        )
+
+
+# ==============================================================================
+# Working directory
+# ==============================================================================
+
+
 def test_getcwd():
     """Test that os.chdir updates the cwd but stepping back restores
     state effectively for getcwd."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        d = launch_dejaview(
-            f"""
-            import os                # Line 1
-            print(os.getcwd())       # Line 2
-            os.chdir({repr(tmpdir)}) # Line 3
-            print(os.getcwd())       # Line 4
-            print()                  # Line 5
-            """
+        verify_deterministic_mutated_value_util(
+            imports="import os",
+            read_stmts="print(os.getcwd())",
+            mutate_stmts=f"os.chdir({repr(tmpdir)})",
         )
 
-        def get_printed_cwd(step_output: str) -> str:
-            """
-            Extract the printed cwd from pdb step output.
-            """
-            lines = step_output.strip().split("\n")
-            return lines[1].strip()
 
-        # 1. Advance to line 2
-        d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
+def test_getcwdb():
+    """Test that os.getcwdb is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.getcwdb()",
+        compare=operator.eq,
+    )
 
-        # 2. Execute Line 2: print(os.getcwd()) -> original_cwd
-        d.sendline("n")
-        step_out = d.assert_line_number(3)
-        original_cwd = get_printed_cwd(step_out)
 
-        # 3. Execute Line 3: os.chdir()
-        d.sendline("n")
-        d.assert_line_number(4)
+# ==============================================================================
+# Terminal / device
+# ==============================================================================
 
-        # 4. Execute Line 4: print(os.getcwd()) -> tmp_cwd
-        d.sendline("n")
-        step_out = d.assert_line_number(5)
-        tmp_cwd = get_printed_cwd(step_out)
+# TODO: look into why running `uv run pytest` makes
+# `dejaview/tests/test_patch.py::test_get_terminal_size` fail
+# def test_get_terminal_size():
+#     """Test that os.get_terminal_size is deterministic."""
+#     verify_deterministic_memoized_value_util(
+#         imports="import os",
+#         expr="tuple(os.get_terminal_size())",
+#         compare=operator.eq,
+#     )
 
-        # 5. Verify directory changed
-        assert original_cwd != tmp_cwd, (
-            f"CWD should have changed. Got {original_cwd} twice."
-        )
 
-        # 6. Step back to line 2 and re-execute lines 2-4 to verify replay
-        d.sendline("back")
-        d.assert_line_number(4)
-        d.sendline("back")
-        d.assert_line_number(3)
-        d.sendline("back")
-        d.assert_line_number(2)
+# def test_isatty():
+#     """Test that os.isatty is deterministic."""
+#     verify_deterministic_memoized_value_util(
+#         imports="import os",
+#         expr="os.isatty(0)",
+#         compare=operator.eq,
+#     )
 
-        # 7. Re-execute line 2: print(os.getcwd()) -> original_cwd_replay
-        d.sendline("n")
-        step_out = d.assert_line_number(3)
-        original_cwd_replay = get_printed_cwd(step_out)
-        assert original_cwd == original_cwd_replay, (
-            f"Original CWD mismatch: {original_cwd!r} vs {original_cwd_replay!r}"
-        )
 
-        # 8. Re-execute line 3: os.chdir()
-        d.sendline("n")
-        d.assert_line_number(4)
+# def test_ctermid():
+#     """Test that os.ctermid is deterministic."""
+#     verify_deterministic_memoized_value_util(
+#         imports="import os",
+#         expr="os.ctermid()",
+#         compare=operator.eq,
+#     )
 
-        # 9. Re-execute line 4: print(os.getcwd()) -> tmp_cwd_replay
-        d.sendline("n")
-        step_out = d.assert_line_number(5)
-        tmp_cwd_replay = get_printed_cwd(step_out)
-        assert tmp_cwd == tmp_cwd_replay, (
-            f"Tmp CWD mismatch: {tmp_cwd!r} vs {tmp_cwd_replay!r}"
-        )
 
-        d.quit()
+# ==============================================================================
+# File-descriptor state
+# ==============================================================================
+
+
+def test_get_blocking():
+    """Test that os.get_blocking is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.get_blocking(0)",
+        compare=operator.eq,
+    )
+
+
+def test_get_inheritable():
+    """Test that os.get_inheritable is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.get_inheritable(0)",
+        compare=operator.eq,
+    )
+
+
+# ==============================================================================
+# Other queries
+# ==============================================================================
+
+
+def test_get_exec_path():
+    """Test that os.get_exec_path is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.get_exec_path()",
+        compare=operator.eq,
+    )
 
 
 def test_urandom():
@@ -988,3 +901,257 @@ def test_urandom():
         imports=import_stmt,
         expr=expr,
     )
+
+
+# ==============================================================================
+# Scheduling queries
+# ==============================================================================
+
+
+def test_sched_getaffinity():
+    """Test that os.sched_getaffinity is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="sorted(os.sched_getaffinity(0))",
+        compare=operator.eq,
+    )
+
+
+def test_sched_get_priority_max():
+    """Test that os.sched_get_priority_max is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.sched_get_priority_max(os.SCHED_OTHER)",
+        compare=operator.eq,
+    )
+
+
+def test_sched_get_priority_min():
+    """Test that os.sched_get_priority_min is deterministic."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.sched_get_priority_min(os.SCHED_OTHER)",
+        compare=operator.eq,
+    )
+
+
+# ==============================================================================
+# Side-effect functions
+# ==============================================================================
+
+# --- File permissions / ownership ---
+
+
+def test_chmod_replay():
+    """Test that os.chmod is deterministic (no-op on replay).
+
+    chmod is idempotent so calling it twice in the test script
+    is safe.  The key property is that on replay the cached None
+    is returned without re-executing the syscall.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "chmod_test.txt")
+        test_file.write_text("hello")
+        _real_os.chmod(str(test_file), 0o644)
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"os.chmod({repr(str(test_file))}, 0o755)",
+        )
+
+
+# --- Create / remove ---
+
+
+def test_mkdir_replay():
+    """Test that os.mkdir is a no-op on replay.
+
+    Uses a custom launch_dejaview test because mkdir is not idempotent
+    (calling it twice on the same path raises FileExistsError), so the
+    generic verify_deterministic_memoized_value_util helper cannot be
+    used.  Instead we call mkdir once, step back, and replay to verify
+    the patched function returns the cached result without re-executing.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = str(Path(tmpdir, "new_dir"))
+
+        d = launch_dejaview(
+            f"""
+            import os                                   # Line 1
+            os.mkdir({repr(target)})                     # Line 2
+            print(os.path.isdir({repr(target)}))         # Line 3
+            print()                                     # Line 4
+            """
+        )
+
+        def get_printed_value(step_output: str) -> str:
+            lines = step_output.strip().split("\n")
+            return lines[1].strip()
+
+        # Execute through line 3
+        d.assert_line_number(1)
+        d.sendline("n")
+        d.assert_line_number(2)
+        d.sendline("n")
+        d.assert_line_number(3)
+        d.sendline("n")
+        step_out = d.assert_line_number(4)
+        value_play = get_printed_value(step_out)
+
+        # Step back to line 2 and replay
+        d.sendline("back")
+        d.assert_line_number(3)
+        d.sendline("back")
+        d.assert_line_number(2)
+
+        d.sendline("n")
+        d.assert_line_number(3)
+        d.sendline("n")
+        step_out = d.assert_line_number(4)
+        value_replay = get_printed_value(step_out)
+
+        assert value_play == value_replay, (
+            f"mkdir replay mismatch: {value_play!r} vs {value_replay!r}"
+        )
+        assert value_play == "True"
+        d.quit()
+
+
+# --- Truncation ---
+
+
+def test_truncate_replay():
+    """Test that os.truncate is deterministic (no-op on replay)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "truncate_test.txt")
+        test_file.write_text("hello world")
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"os.truncate({repr(str(test_file))}, 5)",
+        )
+
+
+# --- Subprocess ---
+
+
+def test_system_replay():
+    """Test that os.system is deterministic (no-op on replay)."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.system('true')",
+        compare=operator.eq,
+    )
+
+
+# ==============================================================================
+# Iterator-returning functions
+# ==============================================================================
+
+
+def test_walk():
+    """Test that os.walk is deterministic on replay.
+
+    os.walk is patched with IteratorPatcher which eagerly consumes
+    the generator during play and returns a fresh iterator during replay.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        Path(tmpdir, "sub1").mkdir()
+        Path(tmpdir, "sub2").mkdir()
+        Path(tmpdir, "sub1", "a.txt").touch()
+        Path(tmpdir, "sub2", "b.txt").touch()
+        Path(tmpdir, "root.txt").touch()
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"str(list(os.walk({repr(tmpdir)})))",
+        )
+
+
+def test_scandir():
+    """Test that os.scandir is deterministic on replay.
+
+    os.scandir is patched with IteratorPatcher which eagerly consumes
+    the iterator during play and returns a fresh _ReplayableIterator
+    that also supports context-manager usage.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        Path(tmpdir, "a.txt").touch()
+        Path(tmpdir, "b.txt").touch()
+        Path(tmpdir, "c.txt").touch()
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"sorted([e.name for e in os.scandir({repr(tmpdir)})])",
+            compare=operator.eq,
+        )
+
+
+# ==============================================================================
+# Low-level I/O
+# ==============================================================================
+
+
+def test_os_open_read():
+    """Test that os.open and os.read are deterministic on replay."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "io_test.txt")
+        test_file.write_text("hello world")
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"os.read(os.open({repr(str(test_file))}, os.O_RDONLY), 100)",
+        )
+
+
+def test_os_write():
+    """Test that os.write is deterministic on replay."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "write_test.txt")
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=(
+                f"os.write("
+                f"os.open({repr(str(test_file))}, os.O_WRONLY | os.O_CREAT), "
+                f"b'hello')"
+            ),
+            compare=operator.eq,
+        )
+
+
+def test_os_pipe():
+    """Test that os.pipe is deterministic on replay."""
+    verify_deterministic_memoized_value_util(
+        imports="import os",
+        expr="os.pipe()",
+    )
+
+
+def test_os_dup():
+    """Test that os.dup is deterministic on replay."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "dup_test.txt")
+        test_file.write_text("hello")
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=f"os.dup(os.open({repr(str(test_file))}, os.O_RDONLY))",
+        )
+
+
+def test_os_lseek():
+    """Test that os.lseek is deterministic on replay."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir, "lseek_test.txt")
+        test_file.write_text("hello world")
+
+        verify_deterministic_memoized_value_util(
+            imports="import os",
+            expr=(
+                f"os.lseek("
+                f"os.open({repr(str(test_file))}, os.O_RDONLY), "
+                f"5, os.SEEK_SET)"
+            ),
+            compare=operator.eq,
+        )

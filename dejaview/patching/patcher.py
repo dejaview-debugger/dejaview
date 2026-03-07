@@ -94,6 +94,193 @@ class GenericPatcher(Patcher[Any, GenericPatcherState]):
         return GenericPatcher.return_or_raise(state)
 
 
+class _ReplayableIterator:
+    """Iterator wrapper that also acts as a context manager.
+
+    Used by ``IteratorPatcher`` so that patched generators (``os.walk``,
+    ``os.fwalk``) and context-manager iterators (``os.scandir``) can be
+    replayed from a stored list without re-executing the original function.
+    """
+
+    def __init__(self, items: list[Any]) -> None:
+        self._iter = iter(items)
+
+    def __iter__(self) -> "_ReplayableIterator":
+        return self
+
+    def __next__(self) -> Any:
+        return next(self._iter)
+
+    def __enter__(self) -> "_ReplayableIterator":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class IteratorPatcher(Patcher[Any, tuple[list[Any] | None, BaseException | None]]):
+    """Patcher for iterator/generator-returning functions.
+
+    During *play*, the iterator is eagerly consumed into a list and the list
+    is stored as the replay state.  During *replay*, a fresh
+    ``_ReplayableIterator`` over the stored list is returned so callers can
+    iterate again without re-executing the original function.
+
+    .. note::
+
+       The items in the list must be picklable because the snapshot
+       mechanism sends ``StateStore`` data through ``multiprocessing``
+       queues.  For ``os.scandir`` (whose ``DirEntry`` objects are
+       **not** picklable), use ``ScanDirPatcher`` instead.
+    """
+
+    @staticmethod
+    def play(
+        func: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> tuple[Callable[[], Any], tuple[list[Any] | None, BaseException | None]]:
+        ret: list[Any] | None = None
+        ex: BaseException | None = None
+        try:
+            ret = list(func(*args, **kwargs))
+        except Exception as err:  # noqa: BLE001
+            ex = err
+        state = (ret, ex)
+
+        def run() -> Any:
+            if ex is not None:
+                raise ex
+            return _ReplayableIterator(ret)  # type: ignore[arg-type]
+
+        return run, state
+
+    @staticmethod
+    def replay(
+        func: Callable[..., Any],
+        state: tuple[list[Any] | None, BaseException | None],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        ret, ex = state
+        if ex is not None:
+            raise ex
+        return _ReplayableIterator(ret)  # type: ignore[arg-type]
+
+
+class _PicklableDirEntry:
+    """Picklable stand-in for ``os.DirEntry``.
+
+    Eagerly captures every property/method result of a live ``DirEntry``
+    so the object can survive pickle round-trips (e.g. through
+    ``multiprocessing`` queues used by the snapshot mechanism) while
+    still providing the same interface that callers like ``os.walk``
+    expect.
+    """
+
+    __slots__ = (
+        "name",
+        "path",
+        "_inode",
+        "_is_dir",
+        "_is_dir_nf",
+        "_is_file",
+        "_is_file_nf",
+        "_is_symlink",
+        "_stat",
+        "_stat_nf",
+    )
+
+    def __init__(self, entry: Any) -> None:
+        self.name: str = entry.name
+        self.path: str = entry.path
+        self._inode: int = entry.inode()
+        self._is_dir: bool = entry.is_dir()
+        self._is_dir_nf: bool = entry.is_dir(follow_symlinks=False)
+        self._is_file: bool = entry.is_file()
+        self._is_file_nf: bool = entry.is_file(follow_symlinks=False)
+        self._is_symlink: bool = entry.is_symlink()
+        # stat() can fail (e.g. broken symlink); store None on failure.
+        try:
+            self._stat: Any = entry.stat()
+        except OSError:
+            self._stat = None
+        try:
+            self._stat_nf: Any = entry.stat(follow_symlinks=False)
+        except OSError:
+            self._stat_nf = None
+
+    def inode(self) -> int:
+        return self._inode
+
+    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+        return self._is_dir if follow_symlinks else self._is_dir_nf
+
+    def is_file(self, *, follow_symlinks: bool = True) -> bool:
+        return self._is_file if follow_symlinks else self._is_file_nf
+
+    def is_symlink(self) -> bool:
+        return self._is_symlink
+
+    def stat(self, *, follow_symlinks: bool = True) -> Any:
+        result = self._stat if follow_symlinks else self._stat_nf
+        if result is None:
+            raise FileNotFoundError(self.path)
+        return result
+
+    def __fspath__(self) -> str:
+        return self.path
+
+    def __repr__(self) -> str:
+        return f"<_PicklableDirEntry {self.name!r}>"
+
+
+class ScanDirPatcher(
+    Patcher[Any, tuple[list[_PicklableDirEntry] | None, BaseException | None]]
+):
+    """Patcher for ``os.scandir``.
+
+    Like ``IteratorPatcher`` but converts each ``DirEntry`` to a
+    ``_PicklableDirEntry`` so the state can be pickled by the snapshot
+    mechanism.
+    """
+
+    @staticmethod
+    def play(
+        func: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> tuple[
+        Callable[[], Any],
+        tuple[list[_PicklableDirEntry] | None, BaseException | None],
+    ]:
+        ret: list[_PicklableDirEntry] | None = None
+        ex: BaseException | None = None
+        try:
+            ret = [_PicklableDirEntry(e) for e in func(*args, **kwargs)]
+        except Exception as err:  # noqa: BLE001
+            ex = err
+        state = (ret, ex)
+
+        def run() -> Any:
+            if ex is not None:
+                raise ex
+            return _ReplayableIterator(ret)  # type: ignore[arg-type]
+
+        return run, state
+
+    @staticmethod
+    def replay(
+        func: Callable[..., Any],
+        state: tuple[list[_PicklableDirEntry] | None, BaseException | None],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        ret, ex = state
+        if ex is not None:
+            raise ex
+        return _ReplayableIterator(ret)  # type: ignore[arg-type]
+
+
 # @patch(patcher=GenericPatcher)
 # def my_func():
 #     pass

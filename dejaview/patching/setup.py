@@ -20,6 +20,7 @@ from dejaview.patching.custom_patchers import (
     UrlopenPatcher,
     _is_not_af_unix,
 )
+from dejaview.patching.patcher import ScanDirPatcher
 from dejaview.patching.patching import (
     Patches,
     PatchingMode,
@@ -170,21 +171,268 @@ def patch_sys(p: Patches):
 
 def patch_os(p: Patches):
     # Patch os module non-deterministic functions
+
+    # --- Process / user identity ---
     p.patch(os, "getpid")  # Process ID
     p.patch(os, "getppid")  # Parent process ID
     p.patch(os, "getuid")  # User ID
     p.patch(os, "getgid")  # Group ID
     p.patch(os, "geteuid")  # Effective user ID
     p.patch(os, "getegid")  # Effective group ID
-    p.patch(os, "getenv")  # Environment variables
+    p.patch(os, "getlogin")  # Login name
+    p.patch(os, "getpgid")  # Process group ID for a given pid
+    p.patch(os, "getpgrp")  # Current process group ID
+    p.patch(os, "getpriority")  # Process scheduling priority
+    p.patch(os, "getresgid")  # Real, effective, saved group IDs
+    p.patch(os, "getresuid")  # Real, effective, saved user IDs
+    p.patch(os, "getsid")  # Session ID
+    p.patch(os, "getgroups")  # Supplemental group IDs
+    p.patch(os, "getgrouplist")  # Group list for a user
+
+    # --- Environment ---
+    p.patch(os, "getenv")  # Environment variables (str)
+    p.patch(os, "getenvb")  # Environment variables (bytes)
+
+    # --- System information ---
     p.patch(os, "times")  # CPU times
     p.patch(os, "uname")  # System information
+    p.patch(os, "cpu_count")  # Number of CPUs
+    p.patch(os, "getloadavg")  # System load averages
+    p.patch(os, "confstr")  # System configuration string
+    p.patch(os, "sysconf")  # System configuration value
+
+    # --- Filesystem queries ---
     p.patch(os, "listdir")  # Directory listing (order varies)
     p.patch(os, "stat")  # File statistics
     p.patch(os, "lstat")  # Symlink statistics
+    p.patch(os, "fstat")  # File statistics by fd
     p.patch(os, "statvfs")  # Filesystem statistics
-    p.patch(os, "getcwd")  # Current working directory
+    p.patch(os, "fstatvfs")  # Filesystem statistics by fd
+    p.patch(os, "readlink")  # Read symlink target
+    p.patch(os, "access")  # Check file access permissions
+    p.patch(os, "getxattr")  # Get extended file attribute
+    p.patch(os, "listxattr")  # List extended file attributes
+    p.patch(os, "fpathconf")  # File configuration by fd
+    p.patch(os, "pathconf")  # File configuration by path
+
+    # --- Working directory ---
+    p.patch(os, "getcwd")  # Current working directory (str)
+    p.patch(os, "getcwdb")  # Current working directory (bytes)
+
+    # --- Terminal / device ---
+    p.patch(os, "get_terminal_size")  # Terminal window size
+    p.patch(os, "isatty")  # Is fd a terminal
+    p.patch(os, "ttyname")  # Terminal device name
+    p.patch(os, "ctermid")  # Controlling terminal name
+    p.patch(os, "device_encoding")  # Device encoding
+    p.patch(os, "tcgetpgrp")  # Terminal foreground process group
+
+    # --- File-descriptor state ---
+    p.patch(os, "get_blocking")  # Blocking mode of fd
+    p.patch(os, "get_inheritable")  # Inheritable flag of fd
+
+    # --- Other queries ---
+    p.patch(os, "get_exec_path")  # Execution search path
     p.patch(os, "urandom")  # Random bytes
+
+    # --- Scheduling queries ---
+    p.patch(os, "sched_getaffinity")  # CPU affinity set
+    p.patch(os, "sched_getparam")  # Scheduling parameters
+    p.patch(os, "sched_getscheduler")  # Scheduling policy
+    p.patch(os, "sched_get_priority_max")  # Max scheduling priority
+    p.patch(os, "sched_get_priority_min")  # Min scheduling priority
+    p.patch(os, "sched_rr_get_interval")  # Round-robin time quantum
+
+    # ================================================================
+    # Side-effect functions: execute normally on the first call;
+    # on replay the cached return value (typically None) is returned
+    # and the real function is NOT called again.
+    # ================================================================
+
+    # --- File permissions / ownership ---
+    p.patch(os, "chmod")
+    p.patch(os, "fchmod")
+    p.patch(os, "chown")
+    p.patch(os, "fchown")
+    p.patch(os, "lchown")
+
+    # --- Directory changes ---
+    p.patch(os, "chdir")
+    p.patch(os, "fchdir")
+    p.patch(os, "chroot")
+
+    # --- Create / remove ---
+    p.patch(os, "mkdir")
+    p.patch(os, "rmdir")
+    p.patch(os, "remove")
+    p.patch(os, "unlink")
+    # TODO: Gemini mentions some issues with double counting when
+    # os.makedirs and/or os.removedirs are patched since it double
+    # counts some sequence numbers. Explore this further.
+    # NOTE: os.makedirs and os.removedirs are Python wrappers that
+    # internally call the patched os.mkdir / os.rmdir. They get
+    # determinism automatically from the patched C-level functions
+    # they delegate to.
+
+    # --- Rename / move ---
+    p.patch(os, "rename")
+    p.patch(os, "replace")
+    # NOTE: os.renames is a Python wrapper that calls os.rename,
+    # os.makedirs, and os.removedirs inherits determinism from
+    # patched os.rename.
+
+    # --- Links ---
+    p.patch(os, "link")
+    p.patch(os, "symlink")
+
+    # --- Truncation ---
+    p.patch(os, "truncate")
+    p.patch(os, "ftruncate")
+
+    # --- Timestamps ---
+    p.patch(os, "utime")
+
+    # --- Extended attributes ---
+    p.patch(os, "setxattr")
+    p.patch(os, "removexattr")
+
+    # --- Environment mutation ---
+    p.patch(os, "putenv")
+    p.patch(os, "unsetenv")
+
+    # --- Process identity setters ---
+    p.patch(os, "setuid")
+    p.patch(os, "setgid")
+    p.patch(os, "seteuid")
+    p.patch(os, "setegid")
+    p.patch(os, "setreuid")
+    p.patch(os, "setregid")
+    p.patch(os, "setresuid")
+    p.patch(os, "setresgid")
+    p.patch(os, "setpgid")
+    p.patch(os, "setpgrp")
+    p.patch(os, "setsid")
+    p.patch(os, "setgroups")
+    p.patch(os, "initgroups")
+    p.patch(os, "setpriority")
+
+    # --- Side-effect with return value ---
+    p.patch(os, "nice")  # Returns new niceness
+    p.patch(os, "umask")  # Returns previous mask
+
+    # --- Sync / flush ---
+    p.patch(os, "fdatasync")
+    p.patch(os, "fsync")
+    p.patch(os, "sync")
+
+    # --- FD state setters ---
+    p.patch(os, "set_blocking")
+    p.patch(os, "set_inheritable")
+
+    # --- Close ---
+    p.patch(os, "close")
+    p.patch(os, "closerange")
+
+    # --- File locking ---
+    p.patch(os, "lockf")
+
+    # --- Terminal setters ---
+    p.patch(os, "tcsetpgrp")
+    p.patch(os, "login_tty")
+
+    # --- Namespace ---
+    p.patch(os, "setns")
+    p.patch(os, "unshare")
+
+    # --- File advice / allocation ---
+    p.patch(os, "posix_fadvise")
+    p.patch(os, "posix_fallocate")
+
+    # --- Scheduling setters ---
+    p.patch(os, "sched_setaffinity")
+    p.patch(os, "sched_setparam")
+    p.patch(os, "sched_setscheduler")
+    p.patch(os, "sched_yield")
+
+    # --- Subprocess (synchronous) ---
+    p.patch(os, "system")  # Returns exit code
+
+    # SKIPPED – os.kill / os.killpg / os.wait* / os.waitpid
+    #   These are used internally by the snapshot infrastructure
+    #   (snapshots.py, safe_fork.py) for process management.  Patching
+    #   them would make the snapshot manager think dead processes are
+    #   alive (cached os.kill(pid,0)) or hang on os.waitpid during
+    #   replay.  Leave them unpatched so the snapshot mechanism works
+    #   correctly.
+    #
+    # SKIPPED – os.fork / os.forkpty
+    #   Handled by the snapshots module (safe_fork).  Patching would
+    #   break the snapshot/replay fork tree.
+    #
+    # SKIPPED – os.abort / os._exit
+    #   Process-termination primitives.  During play they kill the
+    #   process before any state can be recorded.
+    #
+    # SKIPPED – os.exec* family (execl, execle, execv, execve, …)
+    #   These replace the current process image.  The process is gone
+    #   after the call so there is nothing to replay.
+    #
+    # SKIPPED – os.spawn* / os.posix_spawn*
+    #   Return child PIDs.  Because os.wait* is not patched, waiting
+    #   on a cached PID during replay would block or error.
+    #
+    # SKIPPED – os.popen / os.fdopen
+    #   Return file-like objects whose methods (.read, .write, …) are
+    #   not themselves patched, so the objects would be unusable on
+    #   replay.
+
+    # ================================================================
+    # Iterator-returning functions
+    # ================================================================
+
+    # os.scandir returns a context-manager iterator that cannot be
+    # re-iterated once exhausted.  Its DirEntry objects are also not
+    # picklable, so ScanDirPatcher converts them to _PicklableDirEntry
+    # objects that survive multiprocessing-queue serialization.
+    p.patch(os, "scandir", ScanDirPatcher)
+
+    # SKIPPED – os.walk / os.fwalk
+    #   These are Python generators that internally call the patched
+    #   os.scandir (and os.open, os.close for fwalk).  Because the
+    #   low-level functions they delegate to are already patched, walk
+    #   and fwalk automatically produce deterministic results on
+    #   replay without needing their own patch.  Patching them would
+    #   cause double-counting of sequence numbers (the wrapper AND
+    #   its inner scandir/open/close calls both advance).
+
+    # ================================================================
+    # Low-level I/O: file-descriptor operations.  Cached return
+    # values ensure consistency during replay even though the
+    # underlying fds may not correspond to real kernel objects.
+    # ================================================================
+
+    p.patch(os, "open")  # Returns fd (int)
+    p.patch(os, "read")
+    p.patch(os, "readv")
+    p.patch(os, "pread")
+    p.patch(os, "preadv")
+    p.patch(os, "write")
+    p.patch(os, "writev")
+    p.patch(os, "pwrite")
+    p.patch(os, "pwritev")
+    p.patch(os, "lseek")
+    p.patch(os, "dup")
+    p.patch(os, "dup2")
+    p.patch(os, "pipe")
+    p.patch(os, "pipe2")
+    p.patch(os, "sendfile")
+    p.patch(os, "splice")
+    p.patch(os, "openpty")
+    p.patch(os, "mkfifo")
+    p.patch(os, "mknod")
+    p.patch(os, "eventfd")
+    p.patch(os, "eventfd_read")
+    p.patch(os, "eventfd_write")
 
     # Prevent linecache (used by pdb) from calling the patched
     # os.stat/os.lstat during source lookups.  Those internal

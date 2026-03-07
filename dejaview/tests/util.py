@@ -412,6 +412,134 @@ class PropertyTester:
         return second_pass_states
 
 
+def verify_deterministic_mutated_value_util(
+    imports: str,
+    read_stmts: str | list[str],
+    mutate_stmts: str | list[str],
+    parse_value: Callable[[str], Any] = lambda out: out.strip().split("\n")[1].strip(),
+    assert_changed: bool = True,
+) -> tuple[Any, Any]:
+    """
+    Test that a patched function is deterministic when replayed across a state
+    mutation.
+
+    Generates a script with the following structure::
+
+        {imports}
+        {read_stmts}        # block A  (last line must be a print())
+        {mutate_stmts}      # block B
+        {read_stmts}        # block A again
+        print()             # sentinel
+
+    Executes forward through all lines, capturing the printed value from each
+    read block.  Then steps back to the first read block, replays everything,
+    and asserts that the captured values are identical.
+
+    Args:
+        imports: Import statements (may be multi-line).
+        read_stmts: Statement(s) that read and print a value.  The **last**
+            statement must be a ``print()`` call.  Can be a single string or
+            a list of strings.  This block is executed twice (before and after
+            the mutation).
+        mutate_stmts: Statement(s) that change state between the two reads.
+        parse_value: Extracts the interesting value from the raw pdb step
+            output.  Default grabs the second line (the printed text).
+        assert_changed: If *True*, assert that the value changed after
+            mutation (``before != after``).
+
+    Returns:
+        ``(value_before, value_after)`` so callers can make additional
+        assertions.
+    """
+    if isinstance(read_stmts, str):
+        read_stmts = [read_stmts]
+    if isinstance(mutate_stmts, str):
+        mutate_stmts = [mutate_stmts]
+
+    # ── Build the script ──────────────────────────────────────────────────
+    import_lines = [
+        line.strip() for line in imports.strip().split("\n") if line.strip()
+    ]
+
+    script_lines: list[str] = []
+    script_lines.extend(import_lines)
+
+    first_read_start = len(script_lines) + 1  # 1-based
+    script_lines.extend(read_stmts)
+    first_read_end = len(script_lines)  # print line
+
+    script_lines.extend(mutate_stmts)
+
+    script_lines.extend(read_stmts)
+    second_read_end = len(script_lines)  # print line
+
+    script_lines.append("print()")
+
+    script = "\n".join(script_lines)
+
+    # ── Forward pass ──────────────────────────────────────────────────────
+    d = launch_dejaview(script)
+
+    # Advance to the first-read print line
+    d.assert_line_number(1)
+    for line_num in range(1, first_read_end):
+        d.sendline("n")
+        d.assert_line_number(line_num + 1)
+
+    # Execute the first-read print → capture
+    d.sendline("n")
+    step_out = d.assert_line_number(first_read_end + 1)
+    value_before = parse_value(step_out)
+
+    # Execute mutation + second-read pre-print lines
+    for line_num in range(first_read_end + 1, second_read_end):
+        d.sendline("n")
+        d.assert_line_number(line_num + 1)
+
+    # Execute the second-read print → capture
+    d.sendline("n")
+    step_out = d.assert_line_number(second_read_end + 1)
+    value_after = parse_value(step_out)
+
+    if assert_changed:
+        assert value_before != value_after, (
+            f"Expected values to differ after mutation, but both are {value_before!r}"
+        )
+
+    # ── Replay pass ───────────────────────────────────────────────────────
+    # Step back to first_read_start
+    current = second_read_end + 1
+    while current > first_read_start:
+        d.sendline("back")
+        current -= 1
+        d.assert_line_number(current)
+
+    # Replay first-read block
+    for line_num in range(first_read_start, first_read_end):
+        d.sendline("n")
+        d.assert_line_number(line_num + 1)
+    d.sendline("n")
+    step_out = d.assert_line_number(first_read_end + 1)
+    value_before_replay = parse_value(step_out)
+    assert value_before == value_before_replay, (
+        f"Replay mismatch (before): {value_before!r} vs {value_before_replay!r}"
+    )
+
+    # Replay mutation + second-read block
+    for line_num in range(first_read_end + 1, second_read_end):
+        d.sendline("n")
+        d.assert_line_number(line_num + 1)
+    d.sendline("n")
+    step_out = d.assert_line_number(second_read_end + 1)
+    value_after_replay = parse_value(step_out)
+    assert value_after == value_after_replay, (
+        f"Replay mismatch (after): {value_after!r} vs {value_after_replay!r}"
+    )
+
+    d.quit()
+    return value_before, value_after
+
+
 def verify_deterministic_memoized_value_util(
     imports: str,
     expr: str,
