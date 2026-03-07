@@ -2,6 +2,7 @@ import _pyio  # type: ignore[import-not-found]
 import builtins
 import getpass
 import io
+import linecache
 import os
 import random
 import socket
@@ -19,7 +20,12 @@ from dejaview.patching.custom_patchers import (
     UrlopenPatcher,
     _is_not_af_unix,
 )
-from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
+from dejaview.patching.patching import (
+    Patches,
+    PatchingMode,
+    SetPatchingMode,
+    get_patching_mode,
+)
 
 
 # Pass through normally, but skip if muted
@@ -180,6 +186,19 @@ def patch_os(p: Patches):
     p.patch(os, "getcwd")  # Current working directory
     p.patch(os, "urandom")  # Random bytes
 
+    # Prevent linecache (used by pdb) from calling the patched
+    # os.stat/os.lstat during source lookups.  Those internal
+    # calls would advance the sequence counter and corrupt the
+    # replay state.
+    _orig_checkcache = linecache.checkcache
+
+    @wraps(_orig_checkcache)
+    def _safe_checkcache(filename=None):
+        with SetPatchingMode(PatchingMode.OFF):
+            return _orig_checkcache(filename)
+
+    p.replace(linecache, "checkcache", _safe_checkcache)
+
 
 def setup_patching():
     p = Patches()
@@ -219,7 +238,6 @@ def setup_patching():
 
     # Note: shutil doesn't need patching because its sources of non-determinism
     # (e.g. os functions) are already patched.
-
 
     patch_os(p)
     return p

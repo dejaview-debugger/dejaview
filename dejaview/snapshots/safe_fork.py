@@ -19,9 +19,12 @@ def exit_with_parent():
     if retcode != 0:
         raise RuntimeError("prctl failed with code {}".format(retcode))
 
-    # Handle race: parent may already be dead
-    if os.getppid() == 1:
-        os.kill(os.getpid(), signal.SIGTERM)
+    # Use libc directly instead of os.getppid()/os.getpid() to
+    # avoid going through the patching wrapper, which would
+    # corrupt the sequence counter before StateStore is
+    # deserialized in replay processes.
+    if libc.getppid() == 1:
+        os.kill(libc.getpid(), signal.SIGTERM)
 
 
 @set_patching_mode(PatchingMode.OFF)

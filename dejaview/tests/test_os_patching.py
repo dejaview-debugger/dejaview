@@ -1,3 +1,4 @@
+import ast
 import operator
 import os as _real_os
 import tempfile
@@ -214,8 +215,6 @@ def test_listdir():
             The printed output is a Python list repr like "['a.txt', 'b.txt']".
             It appears on the second line (index 1) of the step output.
             """
-            import ast
-
             lines = step_output.strip().split("\n")
             return ast.literal_eval(lines[1].strip())
 
