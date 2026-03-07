@@ -835,6 +835,18 @@ def test_statvfs_symlink():
             lines = step_output.strip().split("\n")
             return lines[1].strip()
 
+        def stable_statvfs_fields(printed_tuple: str) -> tuple[int, ...]:
+            """Extract only the stable structural fields from a printed statvfs tuple.
+
+            statvfs indices: 0=f_bsize, 1=f_frsize, 2=f_blocks, 3=f_bfree,
+            4=f_bavail, 5=f_files, 6=f_ffree, 7=f_favail, 8=f_flag, 9=f_namemax.
+
+            Fields 3,4,6,7 (free block/inode counts) are volatile and can change
+            between calls on a busy system, so we only compare the rest.
+            """
+            t = ast.literal_eval(printed_tuple)
+            return tuple(t[i] for i in (0, 1, 2, 5, 8, 9))
+
         # 1. Advance to line 4
         d.assert_line_number(1)
         d.sendline("n")
@@ -854,9 +866,14 @@ def test_statvfs_symlink():
         step_out = d.assert_line_number(6)
         statvfs_target = get_printed_value(step_out)
 
-        # 4. Verify statvfs follows the symlink (same filesystem => same result)
-        assert statvfs_symlink == statvfs_target, (
-            f"os.statvfs should return the same result for symlink and target.\n"
+        # 4. Verify statvfs follows the symlink (same filesystem).
+        #    Compare only stable structural fields because volatile counters
+        #    (f_bfree, f_bavail, f_ffree, f_favail) can change between the
+        #    two calls on a busy CI machine.
+        assert stable_statvfs_fields(statvfs_symlink) == stable_statvfs_fields(
+            statvfs_target
+        ), (
+            f"os.statvfs should return the same filesystem for symlink and target.\n"
             f"  symlink statvfs: {statvfs_symlink}\n"
             f"  target statvfs:  {statvfs_target}"
         )
