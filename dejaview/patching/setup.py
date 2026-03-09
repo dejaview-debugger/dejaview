@@ -43,6 +43,18 @@ def patch_datetime(p: Patches):
     p.patch(datetime.date, "today")
 
 
+def patch_io(p: Patches):
+    p.patch(os, "open")
+    p.patch(os, "read")
+    p.patch(os, "write")
+    p.patch(os, "close")
+    p.patch(os, "mkdir")
+    p.patch(os, "makedirs")
+    p.patch(os, "remove")
+    p.patch(os, "unlink")
+    p.patch(os, "rmdir")
+
+
 def setup_patching():
     p = Patches()
     p.patch(time, "time")
@@ -57,5 +69,6 @@ def setup_patching():
     p.patch(os, "getpid")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
     patch_datetime(p)
+    patch_io(p)
     p.add(memory_patch())
     return p
