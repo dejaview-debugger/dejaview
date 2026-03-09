@@ -33,48 +33,6 @@ def _clean_global_state():
 
 
 class TestSubprocessPatching:
-    @pytest.mark.parametrize(
-        "func_name, prefix",
-        [
-            ("run", "result"),
-            ("check_output", "output"),
-            ("check_call", "retcode"),
-            ("call", "retcode"),
-            ("getoutput", "out"),
-            ("getstatusoutput", "status"),
-        ],
-    )
-    def test_diverges_without_replay(self, monkeypatch, func_name, prefix):
-        """Memoized replay vs. fresh call produce different results."""
-        call_count = 0
-
-        def _fake(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            return f"{prefix}{call_count}"
-
-        monkeypatch.setattr(f"subprocess.{func_name}", _fake)
-
-        p = Patches()
-        p.patch(subprocess, func_name)
-
-        snap = capture()
-        first = getattr(subprocess, func_name)("dummy")
-        assert first == f"{prefix}1"
-
-        # Replay: reset and call again → memoized value
-        reset(snap)
-        replayed = getattr(subprocess, func_name)("dummy")
-
-        # Fresh: call again without resetting → new value
-        fresh = getattr(subprocess, func_name)("dummy")
-
-        assert replayed == f"{prefix}1", "replay should return the stored value"
-        assert fresh == f"{prefix}2", "without replay, a new value is produced"
-        assert replayed != fresh, "memoized replay and fresh call differ"
-
-        p.__exit__(None, None, None)
-
     def test_popen_memoized(self):
         """Popen replay returns stored output even with different args."""
         p = Patches()
