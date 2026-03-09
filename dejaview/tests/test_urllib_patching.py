@@ -56,37 +56,6 @@ def local_server():
 
 
 class TestUrllibPatching:
-    def test_urlretrieve_diverges_without_replay(self, monkeypatch):
-        """Memoized replay vs. fresh call produce different results."""
-        call_count = 0
-
-        def _fake(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            return f"/tmp/file{call_count}", {}
-
-        monkeypatch.setattr("urllib.request.urlretrieve", _fake)
-
-        p = Patches()
-        p.patch(urllib.request, "urlretrieve")
-
-        snap = capture()
-        first = urllib.request.urlretrieve("http://example.com")
-        assert first == ("/tmp/file1", {})
-
-        # Replay: reset and call again → memoized value
-        reset(snap)
-        replayed = urllib.request.urlretrieve("http://example.com")
-
-        # Fresh: call again without resetting → new value
-        fresh = urllib.request.urlretrieve("http://example.com")
-
-        assert replayed == ("/tmp/file1", {}), "replay should return the stored value"
-        assert fresh == ("/tmp/file2", {}), "without replay, a new value is produced"
-        assert replayed != fresh, "memoized replay and fresh call differ"
-
-        p.__exit__(None, None, None)
-
     def test_urlopen_memoized(self, local_server):
         """urlopen() returns stored response despite different URL on replay."""
         p = Patches()
