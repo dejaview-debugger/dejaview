@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from functools import wraps
 
 from dejaview import _memory_patch
-from dejaview.patching.custom_patchers import TempDirPatcher, TempFilePatcher
 from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
 
 
@@ -46,9 +45,9 @@ def patch_datetime(p: Patches):
 
 
 def patch_tempfile(p: Patches):
-    p.patch(tempfile, "NamedTemporaryFile", TempFilePatcher)
-    p.patch(tempfile, "TemporaryFile", TempFilePatcher)
-    p.patch(tempfile, "TemporaryDirectory", TempDirPatcher)
+    p.patch(tempfile, "NamedTemporaryFile")
+    p.patch(tempfile, "TemporaryFile")
+    p.patch(tempfile, "TemporaryDirectory")
     p.patch(tempfile, "mkdtemp")
     p.patch(tempfile, "mkstemp")
     p.patch(tempfile, "gettempdir")
