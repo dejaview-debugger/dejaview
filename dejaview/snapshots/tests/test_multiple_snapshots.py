@@ -4,6 +4,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from dejaview.counting.counting import (
+    CounterPosition,
+    CounterPositionGlobal,
+    CounterPositionStack,
+)
 from dejaview.counting.dejaview import DejaView
 from dejaview.snapshots.snapshots import (
     ProcessType,
@@ -23,8 +28,18 @@ def _make_line_event(count: int) -> MagicMock:
 def _make_mock_snapshot(instruction_count: int) -> MagicMock:
     """Create a mock _Snapshot with the given instruction count."""
     mock = MagicMock()
-    mock.info = SnapshotInfo(instruction_count=instruction_count)
+    mock.info = SnapshotInfo(
+        position=CounterPosition(
+            CounterPositionStack([instruction_count]),
+            CounterPositionGlobal(instruction_count),
+        )
+    )
     return mock
+
+
+def _make_position(count: int) -> CounterPosition:
+    """Create a CounterPosition with the given global count."""
+    return CounterPosition(CounterPositionStack([count]), CounterPositionGlobal(count))
 
 
 class TestFindBestSnapshot:
@@ -33,7 +48,7 @@ class TestFindBestSnapshot:
     def test_empty_snapshots_returns_zero(self):
         """With no snapshots, should return 0."""
         manager: SnapshotManager = SnapshotManager()
-        assert manager.find_best_snapshot(100) == 0
+        assert manager.find_best_snapshot(CounterPositionGlobal(100)) == 0
 
     def test_exact_match(self):
         """Should return the index of exact match."""
@@ -43,7 +58,7 @@ class TestFindBestSnapshot:
             _make_mock_snapshot(100),
             _make_mock_snapshot(200),
         ]  # type: ignore[assignment]
-        assert manager.find_best_snapshot(100) == 1
+        assert manager.find_best_snapshot(CounterPositionGlobal(100)) == 1
 
     def test_between_snapshots_picks_earlier(self):
         """Should return the index of the snapshot before target."""
@@ -53,7 +68,8 @@ class TestFindBestSnapshot:
             _make_mock_snapshot(100),
             _make_mock_snapshot(200),
         ]  # type: ignore[assignment]
-        assert manager.find_best_snapshot(150) == 1  # 100 is before 150
+        # 100 is before 150
+        assert manager.find_best_snapshot(CounterPositionGlobal(150)) == 1
 
     def test_target_before_all_snapshots(self):
         """Should raise if target is before all snapshots (initial snapshot killed)."""
@@ -63,7 +79,7 @@ class TestFindBestSnapshot:
             _make_mock_snapshot(200),
         ]  # type: ignore[assignment]
         with pytest.raises(RuntimeError, match="initial snapshot"):
-            manager.find_best_snapshot(50)
+            manager.find_best_snapshot(CounterPositionGlobal(50))
 
     def test_target_after_all_snapshots(self):
         """Should return the last index when target is after all snapshots."""
@@ -73,16 +89,16 @@ class TestFindBestSnapshot:
             _make_mock_snapshot(100),
             _make_mock_snapshot(200),
         ]  # type: ignore[assignment]
-        assert manager.find_best_snapshot(300) == 2
+        assert manager.find_best_snapshot(CounterPositionGlobal(300)) == 2
 
     def test_single_snapshot(self):
         """With single snapshot, return 0 for targets at or after; raise for before."""
         manager: SnapshotManager = SnapshotManager()
         manager.snapshots = [_make_mock_snapshot(100)]  # type: ignore[assignment]
-        assert manager.find_best_snapshot(100) == 0
-        assert manager.find_best_snapshot(150) == 0
+        assert manager.find_best_snapshot(CounterPositionGlobal(100)) == 0
+        assert manager.find_best_snapshot(CounterPositionGlobal(150)) == 0
         with pytest.raises(RuntimeError, match="initial snapshot"):
-            manager.find_best_snapshot(50)
+            manager.find_best_snapshot(CounterPositionGlobal(50))
 
 
 class TestEvictSnapshot:
@@ -181,7 +197,7 @@ class TestCaptureSnapshotEviction:
         s1.snapshot_pid = 1001
         manager.snapshots = [s0, s1]  # type: ignore[assignment]
 
-        manager.capture_snapshot(instruction_count=200)
+        manager.capture_snapshot(position=_make_position(200))
 
         # One snapshot should have been evicted
         assert len(manager.snapshots) == 2
@@ -195,7 +211,7 @@ class TestCaptureSnapshotEviction:
         s0.snapshot_pid = 1000
         manager.snapshots = [s0]  # type: ignore[assignment]
 
-        manager.capture_snapshot(instruction_count=100)
+        manager.capture_snapshot(position=_make_position(100))
 
         assert len(manager.snapshots) == 2
 
@@ -211,13 +227,15 @@ class TestDejaViewSnapshotHandler:
         dv.snapshot_manager._last_snapshot_count = 0
 
         # Below interval - should not capture
+        dv.counter.count = 50
         dv._on_instruction(_make_line_event(50))
         assert len(dv.snapshot_manager.snapshots) == 0
 
         # At interval - should capture immediately
+        dv.counter.count = 100
         dv._on_instruction(_make_line_event(100))
         assert len(dv.snapshot_manager.snapshots) == 1
-        assert dv.snapshot_manager.snapshots[0].info.instruction_count == 100
+        assert dv.snapshot_manager.snapshots[0].info.position.global_.count == 100
 
     def test_on_instruction_skipped_in_replay(self):
         """_on_instruction should never capture in a replay."""
@@ -237,12 +255,13 @@ class TestDejaViewSnapshotHandler:
 
         # Simulate line events by calling the handler directly
         for count in range(1, 101):
+            dv.counter.count = count
             dv._on_instruction(_make_line_event(count))
 
         # Should have captured at counts 50 and 100
         assert len(dv.snapshot_manager.snapshots) == 2
-        assert dv.snapshot_manager.snapshots[0].info.instruction_count == 50
-        assert dv.snapshot_manager.snapshots[1].info.instruction_count == 100
+        assert dv.snapshot_manager.snapshots[0].info.position.global_.count == 50
+        assert dv.snapshot_manager.snapshots[1].info.position.global_.count == 100
 
     def test_on_instruction_ignores_non_line_events(self):
         """_on_instruction should only act on line events."""
@@ -275,7 +294,7 @@ class TestSkipWastefulCapture:
         # Gap from s2 (1000) to new (1100) = 100
         # Existing gaps: 0->500 = 500, 500->1000 = 500
         # New gap (100) is smallest, so skip
-        result = manager.capture_snapshot(instruction_count=1100)
+        result = manager.capture_snapshot(position=_make_position(1100))
 
         assert result is None
         assert len(manager.snapshots) == 3  # No change
@@ -295,7 +314,7 @@ class TestSkipWastefulCapture:
 
         # Gap from s2 (1000) to new (1500) = 500
         # Existing gap 0->10 = 10 is smaller, so don't skip
-        manager.capture_snapshot(instruction_count=1500)
+        manager.capture_snapshot(position=_make_position(1500))
 
         # Should have evicted and captured (fork was called)
         mock_fork.assert_called_once()

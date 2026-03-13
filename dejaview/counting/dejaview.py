@@ -18,8 +18,19 @@ from typing import (
     cast,
 )
 
-from dejaview.counting.counting import Event, FrameCounter
-from dejaview.counting.error_detection import StreamErrorDetector
+from dejaview.counting.counting import (
+    CounterPosition,
+    CounterPositionGlobal,
+    CounterPositionPattern,
+    CounterPositionStack,
+    Event,
+    FrameCounter,
+)
+from dejaview.counting.error_detection import (
+    StreamErrorDetector,
+    StreamMismatchError,
+    VerifyMode,
+)
 from dejaview.counting.socket_client import DebugSocketClient
 from dejaview.patching import backdoor, patching
 from dejaview.patching.setup import setup_patching
@@ -30,6 +41,8 @@ from dejaview.snapshots.snapshots import (
     SnapshotManager,
 )
 
+original_print = print  # save original print so we don't use the patched version
+
 # Debug mode flag - set to False to disable debug logging
 DEBUG = False
 
@@ -37,7 +50,7 @@ DEBUG = False
 def debug_log(*args: Any) -> None:
     """Print debug messages to stderr if DEBUG is enabled."""
     if DEBUG:
-        print(*args, file=sys.stderr, flush=True)
+        original_print(*args, file=sys.stderr, flush=True)
 
 
 class _SafeStdin:
@@ -54,27 +67,6 @@ class _SafeStdin:
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
-
-
-@dataclass
-class CounterPosition:
-    """
-    Represents a unique position in the execution history.
-    The position is defined by the execution count of each frame in the call stack.
-    """
-
-    counts: List[int]
-    instruction_count: int = 0  # global instruction count for snapshot selection
-
-    def decrement(self) -> None:
-        """
-        Decrement the counter position by one step.
-        """
-        if self.counts[-1] == 0:
-            self.counts.pop()
-        else:
-            self.counts[-1] -= 1
-        self.instruction_count -= 1
 
 
 @dataclass
@@ -119,7 +111,7 @@ class ReverseToTargetRequest:
     Reverse to the given counter position.
     """
 
-    to: CounterPosition | None  # None means we go to the beginning
+    to: CounterPositionPattern | None  # None means we go to the beginning
 
 
 @dataclass
@@ -199,7 +191,7 @@ class ResumeSnapshotArg:
 
     head: CounterPosition  # the current position of the root process
     debugger_state: DebuggerState
-    error_detector_reference: bytes
+    error_detector_reference: VerifyMode
 
     request: RequestForReplay
 
@@ -280,7 +272,7 @@ class DejaView:
             debug_log(
                 f"DEBUG: capturing snapshot at count={count} (last was {last_count})"
             )
-            arg = self.snapshot_manager.capture_snapshot(instruction_count=count)
+            arg = self.snapshot_manager.capture_snapshot(position=self.counter.position)
             if arg is not None:
                 # We're in a replay process forked from this snapshot
                 self._setup_replay_process(arg)
@@ -327,21 +319,17 @@ class DejaView:
         )
         arg = ResumeSnapshotArg(
             function_states=StateStore.serialize(),
-            head=self.get_current_position(),
+            head=self.counter.position,
             debugger_state=self.serialize_debugger_state(),
-            error_detector_reference=self.error_detector.serialize_reference(),
+            error_detector_reference=self.error_detector.as_verify_mode(),
             request=request,
         )
 
         # Calculate target count for snapshot selection
-        target_count: int = 0
-        if isinstance(request, ReverseToTargetRequest):
-            if request.to is None:
-                target_count = 0  # Going to beginning
-            else:
-                target_count = request.to.instruction_count
-        elif isinstance(request, ProbeBreakpointRequest):
-            target_count = 0  # Must scan from beginning to find all breakpoints
+        if isinstance(request, ReverseToTargetRequest) and request.to is not None:
+            target_count = request.to
+        else:
+            target_count = CounterPosition.zero().global_
 
         return self.snapshot_manager.resume_snapshot(arg, target_count=target_count)
 
@@ -383,7 +371,9 @@ class DejaView:
                 probe_result = self.execute_request_with_return(
                     ProbeBreakpointRequest(before=request.before)
                 )
-                request = ReverseToTargetRequest(to=probe_result.to_counts)
+                to_counts = probe_result.to_counts
+                pattern = to_counts.global_ if to_counts is not None else None
+                request = ReverseToTargetRequest(to=pattern)
             elif isinstance(request, QuitRequest):
                 pdb_instance = self.get_pdb()
                 pdb_instance.do_quit("")
@@ -393,11 +383,6 @@ class DejaView:
                 return
             else:
                 assert_never(request)
-
-    def get_current_position(self) -> CounterPosition:
-        # TODO optimize?
-        counts = [frame.count for frame in self.counter.stack]
-        return CounterPosition(counts, instruction_count=self.counter.count)
 
     def serialize_stopinfo(self) -> DebuggerStopInfo:
         pdb_instance = self.get_pdb()
@@ -534,10 +519,37 @@ class DejaView:
             {num: list(cmds) for num, cmds in state.commands.items()}
         )
 
-    def step_back(self):
-        pos = self.get_current_position()
-        pos.decrement()
-        request = ReverseToTargetRequest(to=pos)
+    def reverse_step(self):
+        pos = self.counter.position.global_
+        # Go to the previous instruction globally
+        if pos.count <= 1:
+            print("reverse_step reached the beginning")
+            return
+        pattern = CounterPositionGlobal(pos.count - 1)
+        request = ReverseToTargetRequest(to=pattern)
+        self.execute_request(request)
+
+    def reverse_next(self):
+        pos = self.counter.position.stack
+        counts = list(pos.counts)
+        if counts[-1] == 0:
+            if len(counts) <= 2:
+                print("reverse_next reached the beginning")
+                return
+            counts.pop()
+        else:
+            counts[-1] -= 1
+        pattern = CounterPositionStack(counts)
+        request = ReverseToTargetRequest(to=pattern)
+        self.execute_request(request)
+
+    def reverse_return(self):
+        pos = self.counter.position.stack
+        if len(pos.counts) <= 2:
+            print("reverse_return reached the beginning")
+            return
+        pattern = CounterPositionStack(pos.counts[:-1])
+        request = ReverseToTargetRequest(to=pattern)
         self.execute_request(request)
 
     def reverse_continue(self):
@@ -545,7 +557,7 @@ class DejaView:
         Reverse-continue to the most recent breakpoint before the current position.
         """
 
-        request = ReverseContinueRequest(before=self.get_current_position())
+        request = ReverseContinueRequest(before=self.counter.position)
         self.execute_request(request)
 
     def restart(self):
@@ -558,20 +570,33 @@ class DejaView:
 
     def __enter__(self):
         self.counter.backup()
+        # Register error_detection_handler before snapshot to make sure it runs
+        # before the timeline_head_handler, so that assert_no_remaining_reference
+        # sees a fully up-to-date error detector.
+        self.counter.add_handler(self.error_detection_handler)
         self.setup_snapshot()
         self.counter.start()
-        self.counter.add_handler(self.error_detection_handler)
         self.patches = setup_patching()
         return self
 
-    def error_detection_handler(self, event: Event) -> bool:
+    def summarize_event(self, event: Event) -> bytearray | bytes:
         data = bytearray()
         data.extend(event.event.encode())  # event type
         data.extend(event.frame.f_lineno.to_bytes(4))  # line number
         if event.event == "call":
             f_code = event.frame.f_code
             data.extend(f_code.co_filename.encode())  # filename
-        self.error_detector.update(data)
+
+        # Human readable debug version
+        # data = (
+        #     f"{event.event=}, "
+        #     f"{event.frame.f_lineno=}, "
+        #     f"{event.frame.f_code.co_filename=}"
+        # ).encode()
+        return data
+
+    def error_detection_handler(self, event: Event) -> bool:
+        self.error_detector.update(self.summarize_event(event))
         return False
 
     def timeline_head_handler(
@@ -583,11 +608,20 @@ class DejaView:
         """
         while True:
             event = yield
-            if event.event != "line":
-                continue
-
-            counts = self.get_current_position()
-            if counts == head:
+            counts = self.counter.position
+            global_eq = counts.global_ == head.global_
+            stack_eq = counts.stack == head.stack
+            if global_eq != stack_eq:
+                raise StreamMismatchError(
+                    count=counts.global_.count,
+                    expected=None,
+                    actual=None,
+                    message="Head position is inconsistent\n"
+                    f"in replay: {counts}\n"
+                    f"in root: {head}\n",
+                )
+            if global_eq:
+                self.error_detector.assert_no_remaining_reference()
                 self.replay_head_reached = True
                 pdb_instance = self.get_pdb()
                 # If pdb would not stop here, immediately hand
@@ -606,7 +640,7 @@ class DejaView:
     def setup_snapshot(self) -> None:
         # capture initial snapshot at instruction count 0
         arg: ResumeSnapshotArg | None = self.snapshot_manager.capture_snapshot(
-            instruction_count=0
+            position=CounterPosition.zero()
         )
         if arg is None:  # we're the root process
             return
@@ -629,10 +663,10 @@ class DejaView:
         self.error_detector.switch_to_verify(arg.error_detector_reference)
         request = arg.request
         match request:
-            case ReverseToTargetRequest():
+            case ReverseToTargetRequest(to=target):
                 pdb_instance = self.get_pdb()
                 # Request to pause at beginning
-                if request.to is None:
+                if target is None:
                     # Pause at beginning
                     pdb_instance.set_step()
                     self.counter.add_handler_generator(
@@ -643,16 +677,16 @@ class DejaView:
                     # Disable all pdb tracing (e.g. breakpoints)
                     self.counter.allow_breakpoints = False
                     # Wait for main doesn't work because it's handled in trace dispatch
-                    # so turn it off since we're not stopping until request.to anyway
+                    # so turn it off since we're not stopping until target anyway
                     pdb_instance._wait_for_mainpyfile = False
 
-                    # add handler to enter debugger at request.to
+                    # add handler to enter debugger at target
                     def handler() -> Generator[None, Event, None]:
                         with patching.SetPatchingMode(patching.PatchingMode.MUTED):
                             while True:
                                 event = yield
-                                counts = self.get_current_position()
-                                if request.to == counts:
+                                position = self.counter.position
+                                if target.position_key(position) == target:
                                     self.counter.allow_breakpoints = True
                                     self.counter.breakpoint(event.frame)
                                     break
@@ -672,7 +706,7 @@ class DejaView:
                             if event.event != "line":
                                 continue
 
-                            counts = self.get_current_position()
+                            counts = self.counter.position
                             if counts == request.before:
                                 target = last_breakpoint
                                 self.snapshot_manager.return_from_replay(
@@ -802,13 +836,36 @@ class DejaView:
                     except Exception as e:
                         debug_log(f"[PDB] Failed to write to pipe: {e}")
 
-        def do_back(self, arg: str):
-            """back
+        def do_reverse_step(self, arg: str):
+            """reverse_step
 
-            Rewind the execution by one step.
+            Reverse to the previous line, stop at the first possible occasion
+            (either in a function that was called or in the current function).
+            "rs" and "rstep" are aliases for "reverse_step".
             """
-            self.dejaview.step_back()
-            debug_log("returned from step_back")
+            self.dejaview.reverse_step()
+            debug_log("returned from reverse_step")
+            return 1
+
+        def do_reverse_next(self, arg: str):
+            """reverse_next
+
+            Reverse execution until the previous line in the current function
+            is reached or the beginning of the function is reached.
+            "rn", "rnext" and "back" are aliases for "reverse_next".
+            """
+            self.dejaview.reverse_next()
+            debug_log("returned from reverse_next")
+            return 1
+
+        def do_reverse_return(self, arg: str):
+            """reverse_return
+
+            Reverse execution until the calling line of the current function.
+            "rr" and "rreturn" are aliases for "reverse_return".
+            """
+            self.dejaview.reverse_return()
+            debug_log("returned from reverse_return")
             return 1
 
         def do_reverse_continue(self, arg: str):
@@ -832,6 +889,13 @@ class DejaView:
                 return 0
             raise pdb.Restart
 
+        do_back = do_reverse_next
+        do_rstep = do_reverse_step
+        do_rs = do_reverse_step
+        do_rnext = do_reverse_next
+        do_rn = do_reverse_next
+        do_rreturn = do_reverse_return
+        do_rr = do_reverse_return
         do_rcontinue = do_reverse_continue
         do_rc = do_reverse_continue
         do_restart = do_run
