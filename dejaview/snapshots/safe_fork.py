@@ -24,7 +24,8 @@ def exit_with_parent():
     # corrupt the sequence counter before StateStore is
     # deserialized in replay processes.
     if libc.getppid() == 1:
-        os.kill(libc.getpid(), signal.SIGTERM)
+        with set_patching_mode(PatchingMode.OFF):
+            os.kill(libc.getpid(), signal.SIGTERM)
 
 
 @set_patching_mode(PatchingMode.OFF)

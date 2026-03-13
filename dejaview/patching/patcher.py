@@ -127,17 +127,65 @@ class _ReplayableIterator:
         pass
 
 
-class IteratorPatcher(Patcher[Any, tuple[list[Any] | None, BaseException | None]]):
+@dataclass
+class _LazyIteratorState:
+    cached_items: list[Any]
+    exhausted: bool
+
+
+class _RecordingIterator:
+    """Iterator that lazily records values consumed during play."""
+
+    def __init__(self, source: Iterator[Any], state: _LazyIteratorState) -> None:
+        self._source = source
+        self._state = state
+        self._index = 0
+
+    def __iter__(self) -> "_RecordingIterator":
+        return self
+
+    def __next__(self) -> Any:
+        if self._index < len(self._state.cached_items):
+            item = self._state.cached_items[self._index]
+            self._index += 1
+            return item
+        if self._state.exhausted:
+            raise StopIteration
+
+        try:
+            item = next(self._source)
+        except StopIteration:
+            self._state.exhausted = True
+            raise
+        self._state.cached_items.append(item)
+        self._index += 1
+        return item
+
+    def __enter__(self) -> "_RecordingIterator":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        close = getattr(self._source, "close", None)
+        if callable(close):
+            close()
+
+
+class IteratorPatcher(
+    Patcher[Any, tuple[_LazyIteratorState | None, BaseException | None]]
+):
     """Patcher for iterator/generator-returning functions.
 
-    During *play*, the iterator is eagerly consumed into a list and the list
-    is stored as the replay state.  During *replay*, a fresh
+    During *play*, only values actually consumed by user code are recorded.
+    During *replay*, a fresh
     ``_ReplayableIterator`` over the stored list is returned so callers can
     iterate again without re-executing the original function.
 
     .. note::
 
-       The items in the list must be picklable because the snapshot
+    The cached items must be picklable because the snapshot
        mechanism sends ``StateStore`` data through ``multiprocessing``
        queues.  For ``os.scandir`` (whose ``DirEntry`` objects are
        **not** picklable), use ``ScanDirPatcher`` instead.
@@ -146,110 +194,136 @@ class IteratorPatcher(Patcher[Any, tuple[list[Any] | None, BaseException | None]
     @staticmethod
     def play(
         func: Callable[..., Any], *args: Any, **kwargs: Any
-    ) -> tuple[Callable[[], Any], tuple[list[Any] | None, BaseException | None]]:
-        ret: list[Any] | None = None
+    ) -> tuple[
+        Callable[[], Any], tuple[_LazyIteratorState | None, BaseException | None]
+    ]:
+        state: _LazyIteratorState | None = None
         ex: BaseException | None = None
         try:
-            ret = list(func(*args, **kwargs))
+            source = iter(func(*args, **kwargs))
+            state = _LazyIteratorState(cached_items=[], exhausted=False)
         except Exception as err:  # noqa: BLE001
             ex = err
-        state = (ret, ex)
+        packed_state = (state, ex)
 
         def run() -> Any:
             if ex is not None:
                 raise ex
-            return _ReplayableIterator(ret)  # type: ignore[arg-type]
+            assert state is not None
+            return _RecordingIterator(source, state)
 
-        return run, state
+        return run, packed_state
 
     @staticmethod
     def replay(
         func: Callable[..., Any],
-        state: tuple[list[Any] | None, BaseException | None],
+        state: tuple[_LazyIteratorState | None, BaseException | None],
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        ret, ex = state
+        lazy_state, ex = state
         if ex is not None:
             raise ex
-        return _ReplayableIterator(ret)  # type: ignore[arg-type]
+        assert lazy_state is not None
+        return _ReplayableIterator(lazy_state.cached_items)
 
 
-class _PicklableDirEntry:
-    """Picklable stand-in for ``os.DirEntry``.
+@dataclass
+class _ScanDirState:
+    call_args: tuple[Any, ...]
+    call_kwargs: dict[str, Any]
+    cached_names: list[str | bytes]
+    exhausted: bool
 
-    Eagerly captures every property/method result of a live ``DirEntry``
-    so the object can survive pickle round-trips (e.g. through
-    ``multiprocessing`` queues used by the snapshot mechanism) while
-    still providing the same interface that callers like ``os.walk``
-    expect.
-    """
 
-    __slots__ = (
-        "name",
-        "path",
-        "_inode",
-        "_is_dir",
-        "_is_dir_nf",
-        "_is_file",
-        "_is_file_nf",
-        "_is_symlink",
-        "_stat",
-        "_stat_nf",
-    )
+class _RecordingScanDirIterator:
+    """Lazily records consumed scandir entry names during play."""
 
-    def __init__(self, entry: Any) -> None:
-        self.name: str = entry.name
-        self.path: str = entry.path
-        self._inode: int = entry.inode()
-        self._is_dir: bool = entry.is_dir()
-        self._is_dir_nf: bool = entry.is_dir(follow_symlinks=False)
-        self._is_file: bool = entry.is_file()
-        self._is_file_nf: bool = entry.is_file(follow_symlinks=False)
-        self._is_symlink: bool = entry.is_symlink()
-        # stat() can fail (e.g. broken symlink); store None on failure.
+    def __init__(self, source: Any, state: _ScanDirState) -> None:
+        self._source = source
+        self._state = state
+        self._index = 0
+
+    def __iter__(self) -> "_RecordingScanDirIterator":
+        return self
+
+    def __next__(self) -> Any:
         try:
-            self._stat: Any = entry.stat()
-        except OSError:
-            self._stat = None
+            entry = next(self._source)
+        except StopIteration:
+            self._state.exhausted = True
+            raise
+        self._state.cached_names.append(entry.name)
+        self._index += 1
+        return entry
+
+    def __enter__(self) -> "_RecordingScanDirIterator":
+        if hasattr(self._source, "__enter__"):
+            self._source.__enter__()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if hasattr(self._source, "__exit__"):
+            self._source.__exit__(exc_type, exc_val, exc_tb)
+        else:
+            self.close()
+
+    def close(self) -> None:
+        close = getattr(self._source, "close", None)
+        if callable(close):
+            close()
+
+
+class _ReplayScanDirIterator:
+    """Replay iterator that yields real ``os.DirEntry`` instances."""
+
+    def __init__(self, func: Callable[..., Any], state: _ScanDirState) -> None:
+        self._func = func
+        self._state = state
+        self._iter: Iterator[Any] | None = None
+
+    def _build_iter(self) -> Iterator[Any]:
+        from dejaview.patching.patching import (  # noqa: PLC0415
+            PatchingMode,
+            set_patching_mode,
+        )
+
+        with set_patching_mode(PatchingMode.OFF):
+            source = self._func(*self._state.call_args, **self._state.call_kwargs)
         try:
-            self._stat_nf: Any = entry.stat(follow_symlinks=False)
-        except OSError:
-            self._stat_nf = None
+            entries = list(source)
+        finally:
+            close = getattr(source, "close", None)
+            if callable(close):
+                close()
 
-    def inode(self) -> int:
-        return self._inode
+        by_name: dict[str | bytes, Any] = {entry.name: entry for entry in entries}
+        replay_entries = [by_name[name] for name in self._state.cached_names]
+        return iter(replay_entries)
 
-    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
-        return self._is_dir if follow_symlinks else self._is_dir_nf
+    def __iter__(self) -> "_ReplayScanDirIterator":
+        return self
 
-    def is_file(self, *, follow_symlinks: bool = True) -> bool:
-        return self._is_file if follow_symlinks else self._is_file_nf
+    def __next__(self) -> Any:
+        if self._iter is None:
+            self._iter = self._build_iter()
+        return next(self._iter)
 
-    def is_symlink(self) -> bool:
-        return self._is_symlink
+    def __enter__(self) -> "_ReplayScanDirIterator":
+        return self
 
-    def stat(self, *, follow_symlinks: bool = True) -> Any:
-        result = self._stat if follow_symlinks else self._stat_nf
-        if result is None:
-            raise FileNotFoundError(self.path)
-        return result
+    def __exit__(self, *args: Any) -> None:
+        pass
 
-    def __fspath__(self) -> str:
-        return self.path
-
-    def __repr__(self) -> str:
-        return f"<_PicklableDirEntry {self.name!r}>"
+    def close(self) -> None:
+        pass
 
 
-class ScanDirPatcher(
-    Patcher[Any, tuple[list[_PicklableDirEntry] | None, BaseException | None]]
-):
+class ScanDirPatcher(Patcher[Any, tuple[_ScanDirState | None, BaseException | None]]):
     """Patcher for ``os.scandir``.
 
-    Like ``IteratorPatcher`` but converts each ``DirEntry`` to a
-    ``_PicklableDirEntry`` so the state can be pickled by the snapshot
-    mechanism.
+    Records only consumed entry names so replay can rebuild real
+    ``os.DirEntry`` objects while keeping state picklable.
     """
 
     @staticmethod
@@ -257,34 +331,42 @@ class ScanDirPatcher(
         func: Callable[..., Any], *args: Any, **kwargs: Any
     ) -> tuple[
         Callable[[], Any],
-        tuple[list[_PicklableDirEntry] | None, BaseException | None],
+        tuple[_ScanDirState | None, BaseException | None],
     ]:
-        ret: list[_PicklableDirEntry] | None = None
+        state: _ScanDirState | None = None
         ex: BaseException | None = None
         try:
-            ret = [_PicklableDirEntry(e) for e in func(*args, **kwargs)]
+            source = func(*args, **kwargs)
+            state = _ScanDirState(
+                call_args=tuple(args),
+                call_kwargs=dict(kwargs),
+                cached_names=[],
+                exhausted=False,
+            )
         except Exception as err:  # noqa: BLE001
             ex = err
-        state = (ret, ex)
+        packed_state = (state, ex)
 
         def run() -> Any:
             if ex is not None:
                 raise ex
-            return _ReplayableIterator(ret)  # type: ignore[arg-type]
+            assert state is not None
+            return _RecordingScanDirIterator(source, state)
 
-        return run, state
+        return run, packed_state
 
     @staticmethod
     def replay(
         func: Callable[..., Any],
-        state: tuple[list[_PicklableDirEntry] | None, BaseException | None],
+        state: tuple[_ScanDirState | None, BaseException | None],
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        ret, ex = state
+        scan_state, ex = state
         if ex is not None:
             raise ex
-        return _ReplayableIterator(ret)  # type: ignore[arg-type]
+        assert scan_state is not None
+        return _ReplayScanDirIterator(func, scan_state)
 
 
 # @patch(patcher=GenericPatcher)

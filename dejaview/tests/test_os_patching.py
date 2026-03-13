@@ -152,6 +152,7 @@ def test_getgrouplist():
         compare=operator.eq,
     )
 
+
 # ==============================================================================
 # System information
 # ==============================================================================
@@ -1051,6 +1052,72 @@ def test_scandir():
             program=script,
             command_sequence=[DebugCommand.STEP] * 2,
             num_runs=3,
+        )
+
+
+def test_scandir_typing():
+    """
+    Patching scandir uses the `ScandirPatcher`.
+    This test ensures that the objects returned by the patched `os.scandir` have
+    the same type and attributes as the original `os.DirEntry` objects,
+    allowing type checks like `isinstance(x, DirEntry)` to work correctly.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        Path(tmpdir, "a.txt").touch()
+
+        with _real_os.scandir(tmpdir) as real_it:
+            real_entry = next(real_it)
+            expected_typing = (
+                isinstance(real_entry, _real_os.DirEntry),
+                type(real_entry) is _real_os.DirEntry,
+                type(real_entry).__name__,
+                type(real_entry).__qualname__,
+                type(real_entry).__module__,
+            )
+
+        d = launch_dejaview(
+            f"""
+            import os
+            with os.scandir({repr(tmpdir)}) as _it:
+                _entry = next(_it)
+            print((
+                isinstance(_entry, os.DirEntry),
+                type(_entry) is os.DirEntry,
+                type(_entry).__name__,
+                type(_entry).__qualname__,
+                type(_entry).__module__,
+            ))
+            print()
+            """
+        )
+
+        d.expect_prompt()
+        observed_typing = None
+        for _ in range(20):
+            step_out = d.send_command(DebugCommand.STEP)
+            for _line in step_out.splitlines():
+                line = _line.strip()
+                if not line:
+                    continue
+                try:
+                    value = ast.literal_eval(line)
+                except (ValueError, SyntaxError):
+                    continue
+                if isinstance(value, tuple) and len(value) == 5:
+                    observed_typing = value
+                    break
+            if observed_typing is not None:
+                break
+
+        d.quit()
+
+        assert observed_typing is not None, (
+            "Did not capture scandir typing output from DejaView run."
+        )
+
+        assert observed_typing == expected_typing, (
+            "Patched os.scandir entry typing does not match real os.DirEntry "
+            f"typing behavior. Expected {expected_typing!r}, got {observed_typing!r}."
         )
 
 

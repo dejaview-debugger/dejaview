@@ -24,7 +24,7 @@ from dejaview.patching.patcher import ScanDirPatcher
 from dejaview.patching.patching import (
     Patches,
     PatchingMode,
-    SetPatchingMode,
+    set_patching_mode,
     get_patching_mode,
 )
 
@@ -190,11 +190,11 @@ def patch_os(p: Patches):
     p.patch(os, "getgrouplist")  # Group list for a user
 
     # --- Environment ---
-    # os.getenv and os.getenvb are inherently deterministic within the 
-    # scope of a single process. Since the environment is inherited as a 
-    # static snapshot at startup and subsequent forking utilizes Copy-on-Write 
-    # (COW) semantics, the environment remains isolated from external process 
-    # changes. Therefore, these operations do not require manual patching to 
+    # os.getenv and os.getenvb are inherently deterministic within the
+    # scope of a single process. Since the environment is inherited as a
+    # static snapshot at startup and subsequent forking utilizes Copy-on-Write
+    # (COW) semantics, the environment remains isolated from external process
+    # changes. Therefore, these operations do not require manual patching to
     # maintain determinism.
     # p.patch(os, "getenv")  # Environment variables (str)
     # p.patch(os, "getenvb")  # Environment variables (bytes)
@@ -363,13 +363,17 @@ def patch_os(p: Patches):
     # --- Subprocess (synchronous) ---
     p.patch(os, "system")  # Returns exit code
 
-    # SKIPPED – os.kill / os.killpg / os.wait* / os.waitpid
-    #   These are used internally by the snapshot infrastructure
-    #   (snapshots.py, safe_fork.py) for process management.  Patching
-    #   them would make the snapshot manager think dead processes are
-    #   alive (cached os.kill(pid,0)) or hang on os.waitpid during
-    #   replay.  Leave them unpatched so the snapshot mechanism works
-    #   correctly.
+    # --- Process signaling / waiting ---
+    # These functions are used by snapshot internals and can still be
+    # patched safely because snapshot code executes those internal calls
+    # inside set_patching_mode(PatchingMode.OFF).
+    p.patch(os, "kill")
+    p.patch(os, "killpg")
+    p.patch(os, "wait")
+    p.patch(os, "wait3")
+    p.patch(os, "wait4")
+    p.patch(os, "waitid")
+    p.patch(os, "waitpid")
     #
     # SKIPPED – os.fork / os.forkpty
     #   Handled by the snapshots module (safe_fork).  Patching would
@@ -395,9 +399,8 @@ def patch_os(p: Patches):
     # ================================================================
     # Iterator-returning functions
     # ================================================================
-    # TODO: I don't think iterator patching is working correctly.
-    # Copilot decided to only do a forward determinism test for some
-    # reason but the tests should also check for backwards stepping
+    # Iterator patchers record values lazily as user code consumes them.
+    # Replay only reproduces the already-consumed prefix.
 
     # Copilot summary of what it did:
     """
@@ -412,9 +415,8 @@ def patch_os(p: Patches):
     """
 
     # os.scandir returns a context-manager iterator that cannot be
-    # re-iterated once exhausted.  Its DirEntry objects are also not
-    # picklable, so ScanDirPatcher converts them to _PicklableDirEntry
-    # objects that survive multiprocessing-queue serialization.
+    # re-iterated once exhausted. ScanDirPatcher records consumed
+    # entry names and rebuilds real os.DirEntry objects on replay.
     p.patch(os, "scandir", ScanDirPatcher)
 
     # SKIPPED – os.walk / os.fwalk
@@ -463,7 +465,7 @@ def patch_os(p: Patches):
 
     @wraps(_orig_checkcache)
     def _safe_checkcache(filename=None):
-        with SetPatchingMode(PatchingMode.OFF):
+        with set_patching_mode(PatchingMode.OFF):
             return _orig_checkcache(filename)
 
     p.replace(linecache, "checkcache", _safe_checkcache)

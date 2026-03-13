@@ -30,9 +30,28 @@ struct IdTracker {
 }
 
 impl IdTracker {
+    fn mix_id(seq: u64) -> u64 {
+        // splitmix64: deterministic, fast, and well-distributed.
+        // We previously used sequential IDs (1, 2, 3, ...). That can
+        // accidentally preserve the same relative hash structure as
+        // CPython's default pointer-based object hash on some runs,
+        // causing `list(set(objs))` to keep the same iteration order in
+        // `test_id_patch_disable` even when patching is enabled.
+        //
+        // That failure became visible after unrelated process-management
+        // patching changes shifted runtime allocation patterns enough to
+        // expose the correlation. Mixing removes this structure while
+        // staying deterministic across replay.
+        let mut z = seq.wrapping_add(0x9E3779B97F4A7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        // Keep IDs in positive Py_hash_t range so id() and hash() agree.
+        (z ^ (z >> 31)) & 0x7FFF_FFFF_FFFF_FFFF
+    }
+
     fn get_id(&mut self, addr: usize) -> u64 {
         *self.map.entry(addr).or_insert_with(|| {
-            let id = self.next_id;
+            let id = Self::mix_id(self.next_id);
             self.next_id += 1;
             id
         })
