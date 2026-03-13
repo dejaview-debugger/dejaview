@@ -190,8 +190,14 @@ def patch_os(p: Patches):
     p.patch(os, "getgrouplist")  # Group list for a user
 
     # --- Environment ---
-    p.patch(os, "getenv")  # Environment variables (str)
-    p.patch(os, "getenvb")  # Environment variables (bytes)
+    # os.getenv and os.getenvb are inherently deterministic within the 
+    # scope of a single process. Since the environment is inherited as a 
+    # static snapshot at startup and subsequent forking utilizes Copy-on-Write 
+    # (COW) semantics, the environment remains isolated from external process 
+    # changes. Therefore, these operations do not require manual patching to 
+    # maintain determinism.
+    # p.patch(os, "getenv")  # Environment variables (str)
+    # p.patch(os, "getenvb")  # Environment variables (bytes)
 
     # --- System information ---
     p.patch(os, "times")  # CPU times

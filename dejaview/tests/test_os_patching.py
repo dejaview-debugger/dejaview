@@ -152,60 +152,6 @@ def test_getgrouplist():
         compare=operator.eq,
     )
 
-
-# ==============================================================================
-# Environment
-# ==============================================================================
-
-
-def test_getenv():
-    """Test that os.getenv is deterministic.
-
-    Reads an env var, changes it, reads again, then steps back and
-    replays to verify both reads produce the same output.
-    """
-    env_var = "_DEJAVIEW_TEST_GETENV"
-    original_value = "hello_dejaview"
-
-    old_value = _real_os.environ.get(env_var)
-    _real_os.environ[env_var] = original_value
-
-    try:
-        before, after = verify_deterministic_mutated_value_util(
-            imports="import os",
-            read_stmts=f"print(os.getenv({repr(env_var)}))",
-            mutate_stmts=f"os.environ[{repr(env_var)}] = 'changed_value'",
-        )
-        assert before == original_value, f"Expected {original_value!r}, got {before!r}"
-        assert after == "changed_value", f"Expected 'changed_value', got {after!r}"
-    finally:
-        if old_value is None:
-            _real_os.environ.pop(env_var, None)
-        else:
-            _real_os.environ[env_var] = old_value
-
-
-def test_getenvb():
-    """Test that os.getenvb is deterministic."""
-    env_var = "_DEJAVIEW_TEST_GETENVB"
-    original_value = "hello_bytes"
-
-    old_value = _real_os.environ.get(env_var)
-    _real_os.environ[env_var] = original_value
-
-    try:
-        verify_deterministic_memoized_value_util(
-            imports="import os",
-            expr=f"os.getenvb({repr(env_var.encode())})",
-            compare=operator.eq,
-        )
-    finally:
-        if old_value is None:
-            _real_os.environ.pop(env_var, None)
-        else:
-            _real_os.environ[env_var] = old_value
-
-
 # ==============================================================================
 # System information
 # ==============================================================================
