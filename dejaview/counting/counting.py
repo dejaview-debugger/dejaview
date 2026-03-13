@@ -2,9 +2,9 @@ import bdb
 import os
 import pdb
 import sys
-import types
-import typing
 from dataclasses import dataclass
+from types import FrameType
+from typing import Any, Callable, Generator, override
 
 from dejaview.counting import dejaview
 from dejaview.patching import patching
@@ -12,17 +12,66 @@ from dejaview.patching import patching
 
 @dataclass
 class StackFrame:
-    frame: types.FrameType | None
+    frame: FrameType | None
     count: int
+    being_returned: bool  # are we in the return event of this frame?
 
 
 @dataclass
 class Event:
     count: int  # global count
-    stack: typing.List[StackFrame]  # count for each stack frame
-    frame: types.FrameType  # current frame
+    stack: list[StackFrame]  # count for each stack frame
+    frame: FrameType  # current frame
     event: str  # event type
-    arg: typing.Any  # event argument
+    arg: Any  # event argument
+
+
+@dataclass(order=True)
+class CounterPositionStack:
+    """
+    A pattern that matches a CounterPosition by stack count.
+
+    Ordered lexicographically.
+    """
+
+    counts: list[int]
+
+    @staticmethod
+    def position_key(position: "CounterPosition") -> "CounterPositionStack":
+        return position.stack
+
+
+@dataclass(order=True)
+class CounterPositionGlobal:
+    """
+    A pattern that matches a CounterPosition by global instruction count.
+
+    Ordered by count.
+    """
+
+    count: int
+
+    @staticmethod
+    def position_key(position: "CounterPosition") -> "CounterPositionGlobal":
+        return position.global_
+
+
+type CounterPositionPattern = CounterPositionStack | CounterPositionGlobal
+
+
+@dataclass
+class CounterPosition:
+    """
+    Represents a unique position in the execution history.
+    The position is defined by the execution count of each frame in the call stack.
+    """
+
+    stack: CounterPositionStack
+    global_: CounterPositionGlobal
+
+    @staticmethod
+    def zero() -> "CounterPosition":
+        return CounterPosition(CounterPositionStack([0]), CounterPositionGlobal(0))
 
 
 class FrameCounter:
@@ -43,16 +92,24 @@ class FrameCounter:
             self.__exit__.__code__,
         }
 
-        self.handlers: list[typing.Callable[[Event], bool]] = []
+        self.handlers: list[Callable[[Event], bool]] = []
         self.count = 0
-        self.stack = [StackFrame(None, 0)]
+        self.stack = [StackFrame(frame=None, count=0, being_returned=False)]
         self.sub_tracer = None
-        self.skipped_frames: list[types.FrameType] = []
+        self.skipped_frames: list[FrameType] = []
         self.pdb_factory = lambda: self.CustomPdb(self)
         self.pdb: pdb.Pdb | None = None
         self.allow_breakpoints = True
 
-    def add_handler_generator(self, handler: typing.Generator[None, Event, None]):
+    @property
+    def position(self) -> CounterPosition:
+        counts = [frame.count for frame in self.stack]
+        return CounterPosition(
+            CounterPositionStack(counts),
+            CounterPositionGlobal(self.count),
+        )
+
+    def add_handler_generator(self, handler: Generator[None, Event, None]):
         """
         Handler receives all Event and is removed when the generator finishes.
         """
@@ -67,7 +124,7 @@ class FrameCounter:
 
         self.handlers.append(handler_wrapper)
 
-    def add_handler(self, handler: typing.Callable[[Event], bool]):
+    def add_handler(self, handler: Callable[[Event], bool]):
         """
         Handler receives all Event and is removed if it returns True.
         """
@@ -77,13 +134,13 @@ class FrameCounter:
         self.sub_tracer = func
 
         # Patch f_trace set by the debugger
-        frame: types.FrameType | None = sys._getframe().f_back
+        frame: FrameType | None = sys._getframe().f_back
         while frame and frame != self.base_frame:
             if frame.f_trace is not None:
                 frame.f_trace = self.get_tracer(frame.f_trace)
             frame = frame.f_back
 
-    def should_skip_frame_recursively(self, frame: types.FrameType) -> bool:
+    def should_skip_frame_recursively(self, frame: FrameType) -> bool:
         """Determine if the frame and all its subframes should be skipped."""
         return (
             frame.f_code in self.own_function_codes
@@ -92,7 +149,7 @@ class FrameCounter:
         )
 
     def get_tracer(self, sub_tracer):
-        def tracer(frame: types.FrameType, event: str, arg: typing.Any) -> typing.Any:
+        def tracer(frame: FrameType, event: str, arg: Any) -> Any:
             # Skip frames that should be skipped
             while self.skipped_frames:
                 # Is the current frame called by the last skipped frame?
@@ -109,19 +166,32 @@ class FrameCounter:
                 return None
 
             # Track the current stack
-            if event == "call":
-                self.stack.append(StackFrame(frame, 0))
-            elif event == "return":
-                self.stack.pop()
-                # Returning from function also counts as a instruction
-                # Note that "return" event also triggers when leaving a frame
-                # due to an unhandled exception
-                self.count += 1
-                self.stack[-1].count += 1
-            elif event == "line":
-                # Function call has count 0 and first line has count 1
-                self.count += 1
-                self.stack[-1].count += 1
+            if self.stack[-1].being_returned:
+                self.stack.pop()  # Pop returned frame on the next event
+
+            # Everything is a global instruction
+            self.count += 1
+
+            match event:
+                case "call":
+                    # Function call has count 0 and first line has count 1
+                    self.stack.append(
+                        StackFrame(frame=frame, count=0, being_returned=False)
+                    )
+                case "return":
+                    # Mark it as being returned so it gets popped on the next event
+                    self.stack[-1].being_returned = True
+                    # Returning from function also counts as a instruction in its frame
+                    # Note that "return" event also triggers when leaving a frame
+                    # due to an unhandled exception
+                    self.stack[-1].count += 1
+                case "line":
+                    self.stack[-1].count += 1
+                case "exception":
+                    # Also count exceptions
+                    self.stack[-1].count += 1
+                case _:
+                    raise ValueError(f"Unknown event type: {event}")
 
             try:
                 # Call the user-defined handlers, remove the ones that return True.
@@ -198,7 +268,7 @@ class FrameCounter:
             super().__init__()
             self.counter = counter
 
-        @typing.override
+        @override
         def trace_dispatch(self, frame, event, arg):
             # When breakpoint pauses are disallowed (e.g. probing for last breakpoint),
             # skip all debugger work

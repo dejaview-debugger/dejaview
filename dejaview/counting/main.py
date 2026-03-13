@@ -108,7 +108,7 @@ def main():
                 break
             print("The program finished and will be restarted")
         except StreamMismatchError as e:
-            print(f"Replay divergence detected at count {e.count}")
+            print(f"Replay divergence detected at count {e.count}: {e.message}")
             print("Restarting the debugging session.")
         except pdb.Restart:
             print("Restarting", target, "with arguments:")

@@ -158,6 +158,31 @@ class DejaViewInstance(pexpect.spawn):
         )
         return output
 
+    def run_to(self, line_number: int) -> str:
+        """
+        Step forward until we reach the given line number, then return the output.
+
+        Args:
+            line_number: The line number to step until.
+        """
+        self.sendline("b " + str(line_number))
+        out = self.expect_prompt()
+        match = re.search(r"Breakpoint (\d+) at", out)
+        assert match, f"Failed to set breakpoint at line {line_number}. Output:\n{out}"
+        breakpoint_number = match.group(1)
+        self.sendline("c")
+        out = self.assert_line_number(line_number)
+        self.sendline("clear " + breakpoint_number)
+        self.expect_prompt()
+        return out
+
+    def restart(self) -> str:
+        """
+        Restart the program and return the output after restart.
+        """
+        self.sendline("restart")
+        return self.expect_prompt()
+
 
 @dataclass
 class SourceFile:

@@ -9,7 +9,7 @@ from dejaview.tests.util import (
 )
 
 
-def test_reverse_step():
+def test_print():
     d = launch_dejaview(
         """
         print()         # Line 1
@@ -30,6 +30,107 @@ def test_reverse_step():
     d.assert_line_number(2)
     d.sendline("n")
     assert "101" in d.expect_prompt()
+    d.quit()
+
+
+def test_rstep():
+    d = launch_dejaview(
+        """
+        1
+        2
+        def bar():
+            raise ValueError("error in bar")
+        def foo():
+            6
+            7
+            try:
+                bar()
+            except ValueError:
+                pass
+        foo()
+        13
+        14
+        """
+    )
+
+    # capture forward step states
+    expected: list[str] = []
+    while True:
+        out = d.expect_prompt()
+        expected.append(out.removeprefix("step").strip())
+        state = d.capture_state()
+        d.sendline("step")
+        if state.line_number == 14:
+            d.expect_prompt()
+            break
+
+    # test that reverse step gives the same sequence
+    actual: list[str] = []
+    for _ in expected:
+        d.sendline("rstep")
+        out = d.expect_prompt()
+        actual.append(out.removeprefix("rstep").strip())
+        state = d.capture_state()
+        if state.line_number == 1:
+            break
+
+    actual.reverse()  # reverse to match forward order
+    assert actual == expected
+
+    d.quit()
+
+
+def test_rnext():
+    d = launch_dejaview(
+        """
+        1
+        2
+        def foo():
+            4
+            5
+        foo()
+        7
+        8
+        """
+    )
+
+    d.assert_line_number(1)
+    d.run_to(7)
+    d.sendline("rnext")
+    d.assert_line_number(6)
+
+    d.restart()
+    d.run_to(5)
+    d.sendline("rnext")
+    d.assert_line_number(4)
+
+    d.restart()
+    d.run_to(4)
+    d.sendline("rnext")
+    assert "--Call--" in d.expect_prompt()
+
+    d.quit()
+
+
+def test_rreturn():
+    d = launch_dejaview(
+        """
+        1
+        2
+        def foo():
+            4
+            5
+        foo()
+        7
+        8
+        """
+    )
+
+    d.assert_line_number(1)
+    d.run_to(5)
+    d.sendline("rreturn")
+    d.assert_line_number(6)
+
     d.quit()
 
 
