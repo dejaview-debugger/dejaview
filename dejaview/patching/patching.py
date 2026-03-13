@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from dejaview.patching.patcher import GenericPatcher, Patcher
 from dejaview.patching.state_store import StateStore
+from dejaview.patching.util import hide_from_traceback
 
 ResetFunc = Callable[[int], None]
 CaptureFunc = Callable[[], int]
@@ -69,6 +70,7 @@ def log_results[F: Callable[..., Any]](
     reset_funcs.append(reset_seq)
 
     @wraps(func)
+    @hide_from_traceback
     def wrapper(*args: Any, **kwargs: Any):
         if get_patching_mode() == PatchingMode.OFF:
             return func(*args, **kwargs)
@@ -167,8 +169,37 @@ class Patches:
         obj: Any,
         attribute: str,
         patcher: type[Patcher[Any, Any]] = GenericPatcher,
+        should_patch: Callable[..., bool] | None = None,
     ) -> None:
-        self.decorate(obj, attribute, lambda f: log_results(f, patcher))
+        """
+        Args:
+            obj: Object containing the attribute to patch.
+            attribute: Name of the attribute to patch.
+            patcher: Patcher class to use for this patch.
+            should_patch:
+                Function that takes the same arguments as the patched function
+                and returns a boolean indicating whether to apply the patch or not.
+                If None, the patch is always applied.
+                If provided, it must be deterministic for the same arguments.
+        """
+        if should_patch is None:
+            self.decorate(obj, attribute, lambda f: log_results(f, patcher))
+        else:
+
+            def factory(func: Callable[..., Any]) -> Callable[..., Any]:
+                patched = log_results(func, patcher)
+
+                @wraps(func)
+                @hide_from_traceback
+                def wrapper(*args: Any, **kwargs: Any) -> Any:
+                    if should_patch(*args, **kwargs):
+                        return patched(*args, **kwargs)
+                    else:
+                        return func(*args, **kwargs)
+
+                return wrapper
+
+            self.decorate(obj, attribute, factory)
 
     def __enter__(self) -> "Patches":
         return self
