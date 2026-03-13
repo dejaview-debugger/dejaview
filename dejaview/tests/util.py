@@ -153,7 +153,8 @@ class DejaViewInstance(pexpect.spawn):
         output = self.expect_prompt()
         state = self.capture_state()
         assert state.line_number == expected_line_number, (
-            f"Expected line {expected_line_number}, found {state.line_number}"
+            f"Expected line {expected_line_number}, found {state.line_number}\n"
+            f"Full output:\n{output}"
         )
         return output
 

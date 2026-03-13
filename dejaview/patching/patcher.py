@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+from dataclasses import dataclass
 from typing import Any, Callable, Protocol
+
+import tblib  # type: ignore[import-untyped]
+import tblib.pickling_support  # type: ignore[import-untyped]
+
+from dejaview.patching.util import hide_from_traceback
 
 
 class Patcher[TReturn, TState](Protocol):
@@ -28,32 +35,51 @@ class Patcher[TReturn, TState](Protocol):
     ) -> TReturn: ...
 
 
-class GenericPatcher(Patcher[Any, tuple[Any | None, BaseException | None]]):
+@dataclass
+class ExcInfo:
+    e: BaseException
+    tb: tblib.Traceback
+
+
+@dataclass
+class GenericPatcherState:
+    return_value: Any
+    exc_info: ExcInfo | None
+
+
+class GenericPatcher(Patcher[Any, GenericPatcherState]):
     """Default patcher that stores return value and any raised exception."""
 
     @staticmethod
-    def return_or_raise(state: tuple[Any | None, BaseException | None]) -> Any:
-        ret, ex = state
-        if ex is not None:
-            raise ex
-        return ret
+    @hide_from_traceback
+    def return_or_raise(state: GenericPatcherState) -> Any:
+        info = state.exc_info
+        if info is not None:
+            # skip an extra frame to hide the `ret = func(*args, **kwargs)` line
+            tb = info.tb.as_traceback().tb_next
+            raise info.e.with_traceback(tb)
+        return state.return_value
 
     @staticmethod
     def play(func, *args, **kwargs):
-        ret: Any | None = None
-        ex: BaseException | None = None
         try:
             ret = func(*args, **kwargs)
-        except Exception as err:  # noqa: BLE001 - re-raising below preserves context
-            ex = err
-        state = (ret, ex)
+            state = GenericPatcherState(return_value=ret, exc_info=None)
+        except BaseException as err:
+            tblib.pickling_support.install(err)
+            _, ev, tb = sys.exc_info()
+            assert ev is not None
+            exc_info = ExcInfo(e=ev, tb=tblib.Traceback(tb))
+            state = GenericPatcherState(return_value=None, exc_info=exc_info)
 
+        @hide_from_traceback
         def run() -> Any:
             return GenericPatcher.return_or_raise(state)
 
         return run, state
 
     @staticmethod
+    @hide_from_traceback
     def replay(func, state, *args, **kwargs):
         return GenericPatcher.return_or_raise(state)
 

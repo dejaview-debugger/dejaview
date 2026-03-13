@@ -31,22 +31,44 @@ def memory_patch():
         _memory_patch.disable()
 
 
-def patch_datetime(p: Patches):
-    # Patch the class methods to memoize their results
+@contextmanager
+def datetime_patch():
     import _pydatetime  # type: ignore[import-not-found]  # noqa: PLC0415
+    import datetime as old_datetime  # noqa: PLC0415
 
+    # Force it to use the Python implementation of datetime over the native one.
+    # Note that function patches are not needed because _pydatetime uses time module
+    # as the only source of non-determinism.
     sys.modules["datetime"] = _pydatetime
-    import datetime  # noqa: PLC0415
-
-    p.patch(datetime.datetime, "now")
-    p.patch(datetime.datetime, "utcnow")
-    p.patch(datetime.date, "today")
+    try:
+        yield
+    finally:
+        sys.modules["datetime"] = old_datetime
 
 
 def setup_patching():
     p = Patches()
-    p.patch(time, "time")
+
     p.patch(time, "sleep")
+    p.patch(time, "time")
+    p.patch(time, "time_ns")
+    p.patch(time, "monotonic")
+    p.patch(time, "monotonic_ns")
+    p.patch(time, "perf_counter")
+    p.patch(time, "perf_counter_ns")
+    p.patch(time, "process_time")
+    p.patch(time, "process_time_ns")
+    p.patch(time, "thread_time")
+    p.patch(time, "thread_time_ns")
+    p.patch(time, "clock_gettime")
+    p.patch(time, "clock_gettime_ns")
+    p.patch(time, "clock_settime")
+    p.patch(time, "clock_settime_ns")
+    for func in ["ctime", "gmtime", "localtime"]:
+        p.patch(time, func, should_patch=lambda seconds=None: seconds is None)
+    # Note that functions like tzset depend only on environment variables, which
+    # should replay deterministically with all patches in place.
+
     p.patch(random.SystemRandom, "getrandbits")
     p.patch(random, "random")
     p.patch(socket.socket, "bind")
@@ -56,6 +78,6 @@ def setup_patching():
     p.patch(builtins, "input")
     p.patch(os, "getpid")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
-    patch_datetime(p)
+    p.add(datetime_patch())
     p.add(memory_patch())
     return p
