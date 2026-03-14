@@ -1175,6 +1175,170 @@ def test_waitid():
     _verify_wait_like_replay("os.waitid(os.P_PID, pid, os.WEXITED)")
 
 
+def _verify_spawn_like_replay(spawn_stmt: str) -> None:
+    """Verify that an os.spawn*/os.posix_spawn* call is deterministic across replay.
+
+    The child process is created by the dejaview script (not by pytest) because
+    os.waitpid must be called by the same process that spawned the child.  The
+    child is ``/bin/true`` which exits immediately, so the wait call during play
+    blocks only for the brief time the child needs to exit.
+
+    During replay, *both* the spawn call and the subsequent ``os.waitpid`` return
+    their memoized results without touching the kernel:
+
+    * The spawn call returns the recorded PID without actually creating a new
+      process — the child is **not** spawned a second time.
+    * ``os.waitpid`` returns its memoized ``(pid, status)`` tuple immediately,
+      so it cannot block even though the original child no longer exists.
+
+    To explicitly verify no process is spawned on replay, we probe whether the
+    replayed PID still exists using ``os.kill(pid, 0)`` under
+    ``SetPatchingMode(PatchingMode.OFF)``. The probe uses an ``if`` branch to
+    emit ``"child-alive"`` or ``"child-gone"``.
+    """
+    d = launch_dejaview(
+        f"""
+        import os
+        from dejaview.patching.patching import PatchingMode, SetPatchingMode
+
+        def child_liveness_marker(pid):
+            alive = False
+            with SetPatchingMode(PatchingMode.OFF):
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except ProcessLookupError:
+                    pass
+            if alive:
+                return "child-alive"
+            return "child-gone"
+
+        pid = {spawn_stmt}
+        os.waitpid(pid, 0)
+        marker = child_liveness_marker(pid)
+        print(marker)
+        print(pid)
+        print()
+        """
+    )
+
+    # Play: execute spawn+wait and record marker + pid outputs.
+    d.assert_line_number(1)
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("n")
+    d.assert_line_number(4)
+    d.sendline("n")
+    d.assert_line_number(16)
+    d.sendline("n")
+    d.assert_line_number(17)
+    d.sendline("n")
+    d.assert_line_number(18)
+    d.sendline("n")
+    d.assert_line_number(19)
+    d.sendline("n")
+    marker_play_out = d.assert_line_number(20)
+    marker_play = _get_printed_value(marker_play_out)
+    d.sendline("n")
+    pid_play_out = d.assert_line_number(21)
+    value_play = _get_printed_value(pid_play_out)
+
+    # Back up to just before the spawn call.
+    d.sendline("back")
+    d.assert_line_number(20)
+    d.sendline("back")
+    d.assert_line_number(19)
+    d.sendline("back")
+    d.assert_line_number(18)
+    d.sendline("back")
+    d.assert_line_number(17)
+    d.sendline("back")
+    d.assert_line_number(16)
+    d.sendline("back")
+    d.assert_line_number(4)
+    d.sendline("back")
+    d.assert_line_number(2)
+
+    # Replay: spawn/wait should be memoized and marker should stay child-gone.
+    d.sendline("n")
+    d.assert_line_number(4)
+    d.sendline("n")
+    d.assert_line_number(16)
+    d.sendline("n")
+    d.assert_line_number(17)
+    d.sendline("n")
+    d.assert_line_number(18)
+    d.sendline("n")
+    d.assert_line_number(19)
+    d.sendline("n")
+    marker_replay_out = d.assert_line_number(20)
+    marker_replay = _get_printed_value(marker_replay_out)
+    d.sendline("n")
+    pid_replay_out = d.assert_line_number(21)
+    value_replay = _get_printed_value(pid_replay_out)
+
+    assert marker_play == "child-gone", (
+        f"play unexpectedly reports child still alive: {marker_play!r}"
+    )
+    assert marker_replay == "child-gone", (
+        f"replay appears to have spawned a process (marker={marker_replay!r})"
+    )
+    assert value_play == value_replay, (
+        f"spawn replay mismatch: {value_play!r} vs {value_replay!r}"
+    )
+    d.quit()
+
+
+def test_spawnl():
+    """Test that os.spawnl is deterministic (absolute path, positional args)."""
+    _verify_spawn_like_replay("os.spawnl(os.P_NOWAIT, '/bin/true', 'true')")
+
+
+def test_spawnle():
+    """Test that os.spawnle is deterministic (absolute path, positional args, env)."""
+    _verify_spawn_like_replay("os.spawnle(os.P_NOWAIT, '/bin/true', 'true', {})")
+
+
+def test_spawnlp():
+    """Test that os.spawnlp is deterministic (PATH search, positional args)."""
+    _verify_spawn_like_replay("os.spawnlp(os.P_NOWAIT, 'true', 'true')")
+
+
+def test_spawnlpe():
+    """Test that os.spawnlpe is deterministic (PATH search, positional args, env)."""
+    _verify_spawn_like_replay("os.spawnlpe(os.P_NOWAIT, 'true', 'true', {})")
+
+
+def test_spawnv():
+    """Test that os.spawnv is deterministic (absolute path, list args)."""
+    _verify_spawn_like_replay("os.spawnv(os.P_NOWAIT, '/bin/true', ['true'])")
+
+
+def test_spawnve():
+    """Test that os.spawnve is deterministic (absolute path, list args, env)."""
+    _verify_spawn_like_replay("os.spawnve(os.P_NOWAIT, '/bin/true', ['true'], {})")
+
+
+def test_spawnvp():
+    """Test that os.spawnvp is deterministic (PATH search, list args)."""
+    _verify_spawn_like_replay("os.spawnvp(os.P_NOWAIT, 'true', ['true'])")
+
+
+def test_spawnvpe():
+    """Test that os.spawnvpe is deterministic (PATH search, list args, env)."""
+    _verify_spawn_like_replay("os.spawnvpe(os.P_NOWAIT, 'true', ['true'], {})")
+
+
+def test_posix_spawn():
+    """Test that os.posix_spawn is deterministic (absolute path)."""
+    _verify_spawn_like_replay("os.posix_spawn('/bin/true', ['true'], {})")
+
+
+def test_posix_spawnp():
+    """Test that os.posix_spawnp is deterministic (PATH search)."""
+    _verify_spawn_like_replay("os.posix_spawnp('true', ['true'], {})")
+
+
 # ==============================================================================
 # Iterator-returning functions
 # ==============================================================================

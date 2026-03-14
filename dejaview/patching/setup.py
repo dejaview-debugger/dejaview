@@ -374,6 +374,24 @@ def patch_os(p: Patches):
     p.patch(os, "wait4")
     p.patch(os, "waitid")
     p.patch(os, "waitpid")
+
+    # --- Spawn family ---
+    # All os.spawn* and os.posix_spawn* functions return a plain integer
+    # child PID, which GenericPatcher can pickle and replay without issue.
+    # During play the child is actually spawned; during replay the memoized
+    # PID is returned without touching the kernel.  Because os.wait* is also
+    # patched, any subsequent wait on that PID is equally non-blocking on
+    # replay — the memoized wait result is returned immediately.
+    p.patch(os, "spawnl")
+    p.patch(os, "spawnle")
+    p.patch(os, "spawnlp")
+    p.patch(os, "spawnlpe")
+    p.patch(os, "spawnv")
+    p.patch(os, "spawnve")
+    p.patch(os, "spawnvp")
+    p.patch(os, "spawnvpe")
+    p.patch(os, "posix_spawn")
+    p.patch(os, "posix_spawnp")
     #
     # SKIPPED – os.fork / os.forkpty
     #   Handled by the snapshots module (safe_fork).  Patching would
@@ -387,14 +405,10 @@ def patch_os(p: Patches):
     #   These replace the current process image.  The process is gone
     #   after the call so there is nothing to replay.
     #
-    # SKIPPED – os.spawn* / os.posix_spawn*
-    #   Return child PIDs.  Because os.wait* is not patched, waiting
-    #   on a cached PID during replay would block or error.
-    #
     # SKIPPED – os.popen / os.fdopen
-    #   Return file-like objects whose methods (.read, .write, …) are
-    #   not themselves patched, so the objects would be unusable on
-    #   replay.
+    #   Return file-like objects (io.BufferedRandom, subprocess.Popen
+    #   wrappers, etc.) that are not picklable, so GenericPatcher cannot
+    #   serialise the return value for replay.
 
     # ================================================================
     # Iterator-returning functions
