@@ -1040,6 +1040,14 @@ def _verify_wait_like_replay(wait_stmt: str) -> None:
     d.assert_line_number(4)
     d.sendline("back")
     d.assert_line_number(3)
+
+    # Re-run the wait statement during replay.
+    #
+    # This second `n` is expected to be non-blocking because DejaView replays
+    # the memoized result captured during the first execution instead of
+    # issuing a fresh wait syscall to the kernel. If it performed a real wait
+    # again, there would be no unreaped child left and this step could block
+    # or fail. Stepping immediately to line 5 confirms replay behavior.
     d.sendline("n")
     d.assert_line_number(4)
     d.sendline("n")
