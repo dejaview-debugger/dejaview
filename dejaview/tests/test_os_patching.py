@@ -994,6 +994,180 @@ def test_system_replay():
 
 
 # ==============================================================================
+# Process management
+# ==============================================================================
+
+
+def _get_printed_value(step_output: str) -> str:
+    lines = step_output.strip().split("\n")
+    return lines[1].strip()
+
+
+def _verify_wait_like_replay(wait_stmt: str) -> None:
+    """Verify that a wait-family call is deterministic across replay.
+
+    The child *must* be forked inside the dejaview script because wait-family
+    syscalls operate on children of the **calling** process.  The dejaview
+    subprocess is the process performing the wait, so the forked child must be
+    its own child — not a child of the outer pytest process.
+
+    The child exits immediately (``os._exit(0)``), and the wait call in the
+    script reaps it during both play and replay.  No external cleanup is
+    required after the dejaview session finishes.
+    """
+    d = launch_dejaview(
+        f"""
+        import os
+        pid = os.fork() or os._exit(0)
+        result = {wait_stmt}
+        print(result)
+        print()
+        """
+    )
+
+    d.assert_line_number(1)
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("n")
+    d.assert_line_number(3)
+    d.sendline("n")
+    d.assert_line_number(4)
+    d.sendline("n")
+    play_out = d.assert_line_number(5)
+    value_play = _get_printed_value(play_out)
+
+    d.sendline("back")
+    d.assert_line_number(4)
+    d.sendline("back")
+    d.assert_line_number(3)
+    d.sendline("n")
+    d.assert_line_number(4)
+    d.sendline("n")
+    replay_out = d.assert_line_number(5)
+    value_replay = _get_printed_value(replay_out)
+
+    assert value_play == value_replay, (
+        f"wait replay mismatch: {value_play!r} vs {value_replay!r}"
+    )
+    d.quit()
+    # No external cleanup needed: the child was already reaped by the wait
+    # call inside the dejaview session.
+
+
+def _verify_signal_like_replay(kill_stmt: str, pgid: bool = False) -> None:
+    """Verify that a signal-family call is deterministic across replay.
+
+    The child process is created and owned by the **pytest** process (not by
+    the dejaview script), so cleanup is guaranteed even if the dejaview session
+    crashes.  The child's literal PID is embedded into the dejaview script so
+    the script stays as simple as possible — just the call under test, a
+    ``print``, and an end marker.
+
+    The child is held alive via a pipe while the dejaview session runs.  After
+    the session finishes the pytest process releases the child (by writing to
+    the pipe) and reaps it with ``os.waitpid``.
+
+    Args:
+        kill_stmt: An expression that uses the token ``pid`` to refer to the
+            child's PID.  The token is replaced with the literal PID before the
+            script is passed to dejaview, e.g. ``"os.kill(pid, 0)"``.
+        pgid: When ``True`` the child calls ``os.setpgrp()`` so that it
+            becomes a process-group leader.  Use this for ``os.killpg`` tests
+            where the kill target is a process group rather than a single PID.
+    """
+    # --- set up child in pytest (the "main" process) ---
+    r, w = _real_os.pipe()
+    child_pid = _real_os.fork()
+    if child_pid == 0:
+        if pgid:
+            _real_os.setpgrp()
+        _real_os.close(w)
+        _real_os.read(r, 1)  # block until the parent releases us
+        _real_os._exit(0)
+    _real_os.close(r)
+
+    try:
+        # Embed the literal PID so the dejaview script needs no child
+        # management of its own.
+        script_stmt = kill_stmt.replace("pid", str(child_pid))
+        d = launch_dejaview(
+            f"""
+            import os
+            result = {script_stmt}
+            print(result)
+            print()
+            """
+        )
+
+        # Play: step through to the print line and capture the result.
+        d.assert_line_number(1)
+        d.sendline("n")
+        d.assert_line_number(2)
+        d.sendline("n")
+        d.assert_line_number(3)
+        d.sendline("n")
+        play_out = d.assert_line_number(4)
+        value_play = _get_printed_value(play_out)
+
+        # Replay: back up to the kill line and re-execute.
+        d.sendline("back")
+        d.assert_line_number(3)
+        d.sendline("back")
+        d.assert_line_number(2)
+        d.sendline("n")
+        d.assert_line_number(3)
+        d.sendline("n")
+        replay_out = d.assert_line_number(4)
+        value_replay = _get_printed_value(replay_out)
+
+        assert value_play == value_replay, (
+            f"signal replay mismatch: {value_play!r} vs {value_replay!r}"
+        )
+        d.quit()
+
+    finally:
+        # Release the child (unblock its os.read) and reap it.
+        _real_os.write(w, b"x")
+        _real_os.close(w)
+        _real_os.waitpid(child_pid, 0)
+
+
+def test_kill_replay():
+    """Test that os.kill is deterministic (no-op on replay)."""
+    _verify_signal_like_replay("os.kill(pid, 0)")
+
+
+def test_killg_replay():
+    """Test that os.killpg is deterministic (no-op on replay)."""
+    _verify_signal_like_replay("os.killpg(pid, 0)", pgid=True)
+
+
+def test_wait():
+    """Test that os.wait does not block during replay and is deterministic."""
+    _verify_wait_like_replay("os.wait()")
+
+
+def test_wait3():
+    """Test that os.wait3 does not block during replay and is deterministic."""
+    _verify_wait_like_replay("os.wait3(0)")
+
+
+def test_wait4():
+    """Test that os.wait4 does not block during replay and is deterministic."""
+    _verify_wait_like_replay("os.wait4(pid, 0)")
+
+
+def test_waitpid():
+    """Test that os.waitpid does not block during replay and is deterministic."""
+    _verify_wait_like_replay("os.waitpid(pid, 0)")
+
+
+def test_waitid():
+    """Test that os.waitid does not block during replay and is deterministic."""
+    _verify_wait_like_replay("os.waitid(os.P_PID, pid, os.WEXITED)")
+
+
+# ==============================================================================
 # Iterator-returning functions
 # ==============================================================================
 
