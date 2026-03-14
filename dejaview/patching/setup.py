@@ -392,10 +392,12 @@ def patch_os(p: Patches):
     p.patch(os, "spawnvpe")
     p.patch(os, "posix_spawn")
     p.patch(os, "posix_spawnp")
+    p.patch(os, "fork")
     #
-    # SKIPPED – os.fork / os.forkpty
-    #   Handled by the snapshots module (safe_fork).  Patching would
-    #   break the snapshot/replay fork tree.
+    # SKIPPED – os.forkpty
+    #   Produces a PTY-backed child process with terminal side-effects.
+    #   Left unpatched for now; os.fork is patched and safe_fork uses
+    #   SetPatchingMode(PatchingMode.OFF) for debugger-internal forks.
     #
     # SKIPPED – os.abort / os._exit
     #   Process-termination primitives.  During play they kill the

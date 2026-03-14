@@ -37,7 +37,8 @@ def safe_fork() -> int:
     # We have to save and restore the random state
     # because by default they are changed during fork
     random_state = random.getstate()
-    pid = os.fork()
+    with SetPatchingMode(PatchingMode.OFF):
+        pid = os.fork()
     random.setstate(random_state)
     if pid == 0:
         # in child process
