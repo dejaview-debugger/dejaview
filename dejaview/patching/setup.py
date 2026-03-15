@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from functools import wraps
 
 from dejaview import _memory_patch
+from dejaview.patching.custom_patchers import SocketInitPatcher, SocketMethodPatcher
 from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
 
 
@@ -47,20 +48,31 @@ def datetime_patch():
 
 
 def patch_socket(p: Patches):
-    p.patch(socket.socket, "bind")
-    p.patch(socket.socket, "connect")
-    p.patch(socket.socket, "listen")
-    p.patch(socket.socket, "accept")
-    p.patch(socket.socket, "send")
-    p.patch(socket.socket, "sendto")
-    p.patch(socket.socket, "sendall")
-    p.patch(socket.socket, "recv")
-    p.patch(socket.socket, "recvfrom")
-    p.patch(socket.socket, "close")
-    p.patch(socket.socket, "shutdown")
-    p.patch(socket.socket, "setsockopt")
-    p.patch(socket.socket, "getsockname")
-    p.patch(socket, "socket")
+    # Patch __init__ instead of the module-level constructor to preserve
+    # object identity. SocketInitPatcher replays deterministic slot fields
+    # (family, type, proto) while keeping a real underlying socket object.
+    p.patch(socket.socket, "__init__", SocketInitPatcher)
+
+    # Instance methods use SocketMethodPatcher which skips AF_UNIX sockets
+    # to avoid breaking multiprocessing internals (see !33).
+    for method in (
+        "bind",
+        "connect",
+        "listen",
+        "accept",
+        "send",
+        "sendto",
+        "sendall",
+        "recv",
+        "recvfrom",
+        "close",
+        "shutdown",
+        "setsockopt",
+        "getsockname",
+    ):
+        p.patch(socket.socket, method, SocketMethodPatcher)
+
+    # Module-level functions are safe to use GenericPatcher
     p.patch(socket, "getaddrinfo")
     p.patch(socket, "gethostname")
     p.patch(socket, "gethostbyname")
