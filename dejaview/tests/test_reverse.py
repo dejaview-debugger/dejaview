@@ -498,3 +498,311 @@ def test_rc_2_files():
     d.sendline("rc")
     assert "Line b2" in d.expect_prompt()
     d.quit()
+
+
+def test_setvar():
+    d = launch_dejaview(
+        """
+        a = "original_value"  # Line 1
+        b = 10
+        c = [1, 2, 3]         # Line 3
+        print()
+        """
+    )
+    d.assert_line_number(1)
+    d.sendline("b 3")
+    d.expect_prompt()
+    d.sendline("c")
+    d.assert_line_number(3)
+    d.sendline("setvar a 'modified_value'")
+    d.assert_line_number(3)
+    d.sendline("print(a)")
+    assert "modified_value" in d.expect_prompt()
+    d.sendline("back")
+    d.assert_line_number(2)
+    d.sendline("setvar a 'another_value'")
+    assert "Cannot modify variables while viewing a historical" in d.expect_prompt()
+    d.sendline("print(a)")
+    assert "original_value" in d.expect_prompt()
+    d.sendline("c")
+    d.assert_line_number(3)
+    d.sendline("print(a)")
+    assert "modified_value" in d.expect_prompt()
+    d.sendline("n")
+    d.assert_line_number(4)
+    d.quit()
+
+
+def test_setvar_persists_through_replay():
+    """setvar mutations should be re-applied when replay reaches the same position."""
+    d = launch_dejaview(
+        """
+        a = "original_value"  # Line 1
+        b = 10                # Line 2
+        c = [1, 2, 3]         # Line 3
+        print()               # Line 4
+        """
+    )
+    d.assert_line_number(1)
+    d.sendline("b 3")
+    d.expect_prompt()
+    d.sendline("c")
+    d.assert_line_number(3)
+    # Modify the variable at line 3
+    d.sendline("setvar a 'modified_value'")
+    d.assert_line_number(3)
+    d.sendline("print(a)")
+    assert "modified_value" in d.expect_prompt()
+    # Step back past the setvar position
+    d.sendline("back")
+    d.assert_line_number(2)
+    d.sendline("back")
+    d.assert_line_number(1)
+    # Step forward again to line 3 — the setvar should be re-applied by the handler
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("n")
+    d.assert_line_number(3)
+    d.sendline("print(a)")
+    assert "modified_value" in d.expect_prompt()
+    d.quit()
+
+
+def test_setvar_advanced():
+    d = launch_dejaview(
+        """
+        a = "original_value"  # Line 1
+        b = 10
+        c = [1, 2, 3]         # Line 3
+        print()
+        print()
+        """
+    )
+    d.assert_line_number(1)
+    d.sendline("b 3")
+    d.expect_prompt()
+    d.sendline("b 5")
+    d.expect_prompt()
+    d.sendline("c")
+    d.assert_line_number(3)
+    d.sendline("setvar a 'modified_value'")
+    d.expect_prompt()
+    d.sendline("back")
+    d.assert_line_number(2)
+    d.sendline("c")
+    d.assert_line_number(3)
+    d.sendline("print(a)")
+    assert "modified_value" in d.expect_prompt()
+    d.sendline("c")
+    d.assert_line_number(5)
+    d.sendline("back")
+    d.assert_line_number(4)
+    d.sendline("print(a)")
+    assert "modified_value" in d.expect_prompt()
+    d.quit()
+
+
+def test_setvar_back_twice():
+    d = launch_dejaview(
+        """
+        a = 1234  # Line 1
+        print()   # Line 2
+        print()   # Line 3
+        print()   # Line 4
+        """
+    )
+    d.assert_line_number(1)
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("setvar a 1000")
+    d.assert_line_number(2)
+    d.sendline("print(a)")
+    assert "1000" in d.expect_prompt()
+    d.sendline("n")
+    d.assert_line_number(3)
+    d.sendline("n")
+    d.assert_line_number(4)
+    d.sendline("back")
+    d.assert_line_number(3)
+    d.sendline("back")
+    d.assert_line_number(2)
+    d.sendline("n")
+    d.assert_line_number(3)
+    d.sendline("print(a)")
+    assert "1000" in d.expect_prompt()
+    d.quit()
+
+
+def test_setvar_with_breakpoint():
+    d = launch_dejaview(
+        """
+        a = 1234  # Line 1
+        def foo(x):
+            b = 567  # Line 3
+            return x + b
+        print('value:', a) # Line 5
+        print('value:', a)
+        """
+    )
+    d.assert_line_number(1)
+    d.sendline("b 3")
+    d.expect_prompt()
+    d.sendline("b 5")
+    d.expect_prompt()
+    d.sendline("c")
+    d.assert_line_number(5)
+    d.sendline("print('value:', a)")
+    assert "value: 1234" in d.expect_prompt()
+    d.sendline("setvar a foo(1)")
+    d.expect_prompt()
+    d.sendline("print('value:', a)")
+    assert "value: 568" in d.expect_prompt()
+    d.sendline("n")
+    d.assert_line_number(6)
+    d.quit()
+
+
+def test_setvar_field():
+    d = launch_dejaview(
+        """
+        a = lambda: None
+        a.x = 123
+        print(a.x)
+        """
+    )
+    d.assert_line_number(1)
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("n")
+    d.assert_line_number(3)
+    d.sendline("setvar a.x 321")
+    d.assert_line_number(3)
+    d.sendline("n")
+    assert "321" in d.expect_prompt()
+    d.quit()
+
+
+def test_setvar_array():
+    d = launch_dejaview(
+        """
+        a = [1, 2, 3]
+        print(a)
+        """
+    )
+    d.assert_line_number(1)
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("setvar a[2] 4")
+    d.assert_line_number(2)
+    d.sendline("n")
+    assert "[1, 2, 4]" in d.expect_prompt()
+    d.quit()
+
+
+def test_setvar_array_1():
+    d = launch_dejaview(
+        """
+        a = [1, 2, 3]
+        print(a)
+        """
+    )
+    d.assert_line_number(1)
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("setvar a [exec('a[2] = 4'), a][1]")
+    d.assert_line_number(2)
+    d.sendline("n")
+    assert "[1, 2, 4]" in d.expect_prompt()
+    d.quit()
+
+
+def test_code_exec_1():
+    d = launch_dejaview(
+        """
+        a = [1, 2, 3]
+        print(a)
+        print(b) # b will be defined
+        print(b)
+        """
+    )
+    d.assert_line_number(1)
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("!b = a.pop()")
+    d.assert_line_number(2)
+    d.sendline("n")
+    assert "[1, 2]" in d.expect_prompt()
+    d.sendline("!print('value:', b)")
+    assert "value: 3" in d.expect_prompt()
+    d.sendline("back")
+    d.assert_line_number(2)
+    d.sendline("back")
+    d.assert_line_number(1)
+    d.sendline("!print('value:', b)")
+    assert "*** NameError: name 'b' is not defined" in d.expect_prompt()
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("!print('value:', b)")
+    assert "value: 3" in d.expect_prompt()
+    d.sendline("!print('value:', a)")
+    assert "value: [1, 2]" in d.expect_prompt()
+    d.sendline("!a = [0]")
+    d.expect_prompt()
+    d.sendline("!('value: ' + str(a.pop()))")
+    assert "value: 2" in d.expect_prompt()
+    d.sendline("!('value: ' + str(a.pop()))")
+    assert "value: 2" in d.expect_prompt()  # Stays the same, pop shouldn't modify
+    d.sendline("!print('value:', a)")  # Historical state, should revert back
+    assert "value: [1, 2]" in d.expect_prompt()
+    d.quit()
+
+
+def test_code_exec_local_var():
+    d = launch_dejaview(
+        """
+        def foo(arr):
+            other = [1, 2, 3]
+            other.append(arr[-1])
+            print(other)
+            return arr
+        foo([1, 2])
+        """
+    )
+    d.assert_line_number(1)
+    d.sendline("step")
+    d.assert_line_number(6)
+    d.sendline("step")
+    d.assert_line_number(1)
+    d.sendline("step")
+    d.assert_line_number(2)
+    d.sendline("step")
+    d.assert_line_number(3)
+    d.sendline("!other.append(arr[-1])")
+    d.expect_prompt()
+    d.sendline("!print(other)")  # Should work normally
+    assert "[1, 2, 3, 2]" in d.expect_prompt()
+    d.sendline("step")
+    d.assert_line_number(4)
+    d.sendline("back")
+    d.assert_line_number(3)
+    d.sendline("!other.append(-1)")  # Should not modify
+    d.expect_prompt()
+    d.sendline("!print(other)")
+    assert "[1, 2, 3, 2]" in d.expect_prompt()
+    d.sendline("next")
+    d.assert_line_number(4)
+    d.sendline("next")
+    d.assert_line_number(5)
+    d.sendline("!other.append(-1)")  # Should be fine now
+    d.expect_prompt()
+    d.sendline("!print(other)")
+    assert "[1, 2, 3, 2, 2, -1]" in d.expect_prompt()
+    d.sendline("next")
+    d.assert_line_number(5)
+    d.sendline("next")
+    d.assert_line_number(6)
+    d.sendline("!print(other)")  # Should not exist in this scope
+    assert "*** NameError: name 'other' is not defined" in d.expect_prompt()
+    d.sendline("!print(1 % 0)")  # Should not crash debugger
+    assert "*** ZeroDivisionError: integer modulo by zero" in d.expect_prompt()
+    d.quit()
