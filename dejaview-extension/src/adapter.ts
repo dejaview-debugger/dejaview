@@ -45,7 +45,7 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     response.body.supportsStepInTargetsRequest = true;
     response.body.supportsSteppingGranularity = true;
     response.body.supportsSingleThreadExecutionRequests = true;
-    // response.body.supportsSetVariable = true;
+    response.body.supportsSetVariable = true;
     this.sendResponse(response);
   }
 
@@ -334,6 +334,24 @@ export class PythonDebugAdapter extends LoggingDebugSession {
     }
   }
 
+  protected setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments): void {
+    const { name, value } = args;
+    // Send setvar command to the debugger: setvar <name> <value>
+    this.sendCommand(`setvar ${name} ${value}`, (data) => {
+      if (data.success) {
+        response.body = {
+          value: data.value || value,
+          type: data.valueType,
+          variablesReference: 0,
+        };
+      } else {
+        response.success = false;
+        response.message = data.error || "Failed to set variable";
+      }
+      this.sendResponse(response);
+    });
+  }
+
   private parseVariables(output: string): Record<string, any> {
     try {
       // Remove any extraneous text and evaluate the dictionary
@@ -342,7 +360,7 @@ export class PythonDebugAdapter extends LoggingDebugSession {
       if (localsStart !== -1 && localsEnd !== -1) {
         const localsString = output.substring(localsStart, localsEnd + 1);
         return JSON.parse(
-          localsString.replace(/'/g, '"') // Convert single quotes to double quotes for JSON parsing
+          localsString.replace(/'/g, '"'), // Convert single quotes to double quotes for JSON parsing
         );
       }
     } catch (e) {

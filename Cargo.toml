@@ -1,0 +1,11 @@
+[package]
+name = "dejaview"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "_memory_patch"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28.0", features = ["extension-module"] }

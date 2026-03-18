@@ -4,6 +4,8 @@ import random
 import signal
 import sys
 
+from dejaview.patching.patching import PatchingMode, set_patching_mode
+
 
 # source: https://gist.github.com/qxcv/fe5be4d14f855fedf7a5db723aad22c2
 def exit_with_parent():
@@ -22,6 +24,7 @@ def exit_with_parent():
         os.kill(os.getpid(), signal.SIGTERM)
 
 
+@set_patching_mode(PatchingMode.OFF)
 def safe_fork() -> int:
     """
     Fork a new process that will exit when the parent process exits.
