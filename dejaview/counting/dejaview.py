@@ -6,15 +6,13 @@ import pdb
 import sys
 import traceback
 import types
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from random import randbytes
 from typing import (
     Any,
-    Dict,
     Generator,
-    List,
     NoReturn,
-    Optional,
     TextIO,
     assert_never,
     cast,
@@ -102,14 +100,14 @@ class DebuggerStopInfo:
 class DebuggerState:
     """Serializable snapshot of debugger state that must survive forks."""
 
-    breakpoints: List[BreakpointState]
+    breakpoints: list[BreakpointState]
     next_breakpoint_id: int
-    breaks: Dict[str, List[int]]
-    commands: Dict[int, List[str]]
+    breaks: dict[str, list[int]]
+    commands: dict[int, list[str]]
     # Sorted list of (counts_key, statements) pairs in execution order.
     # Each entry maps a CounterPosition to a list of source strings.
     # Populated by default() so replay processes can re-execute them.
-    exec_history: List[tuple[tuple, List[str]]] = field(default_factory=list)
+    exec_history: list[tuple[tuple, list[str]]] = field(default_factory=list)
 
 
 @dataclass
@@ -216,7 +214,7 @@ class DejaView:
     def __init__(
         self,
         *,
-        socket_client: Optional[DebugSocketClient] = None,
+        socket_client: DebugSocketClient | None = None,
         snapshot_interval: int = DEFAULT_SNAPSHOT_INTERVAL,
         max_snapshots: int = DEFAULT_MAX_SNAPSHOTS,
         is_testing: bool = False,
@@ -260,6 +258,8 @@ class DejaView:
         # Set up command handler immediately if socket is available
         if self.socket_client and self.socket_client.connected:
             self.socket_client.set_command_handler(self._handle_socket_command)
+
+        self.patches: patching.Patches | None = None
 
     def _on_instruction(self, event: Event) -> bool:
         """Handler that checks if a snapshot is needed on each line event.
@@ -451,7 +451,7 @@ class DejaView:
     def serialize_debugger_state(self) -> DebuggerState:
         pdb_instance = self.get_pdb()
 
-        serialized_breakpoints: List[BreakpointState] = []
+        serialized_breakpoints: list[BreakpointState] = []
         for bp in bdb.Breakpoint.bpbynumber:
             if bp is None:
                 continue
@@ -539,7 +539,7 @@ class DejaView:
         self._exec_history = list(state.exec_history)
 
     def _register_exec_replay_handlers(
-        self, exec_history: List[tuple[tuple, List[str]]]
+        self, exec_history: list[tuple[tuple, list[str]]]
     ) -> None:
         """
         Register a counter handler that re-executes user statements during replay.
@@ -629,16 +629,29 @@ class DejaView:
         request = ReverseToTargetRequest(to=None)
         self.execute_request(request)
 
-    def __enter__(self):
-        self.counter.backup()
-        # Register error_detection_handler before snapshot to make sure it runs
-        # before the timeline_head_handler, so that assert_no_remaining_reference
-        # sees a fully up-to-date error detector.
-        self.counter.add_handler(self.error_detection_handler)
-        self.setup_snapshot()
-        self.counter.start()
-        self.patches = setup_patching()
-        return self
+    @contextmanager
+    def patching_context(self):
+        if not self.patches:
+            self.patches = setup_patching()
+            try:
+                with self.patches:
+                    yield
+            finally:
+                self.patches = None
+        else:
+            yield
+
+    @contextmanager
+    def context(self):
+        assert patching.get_patching_mode() == patching.PatchingMode.OFF
+        with self.patching_context(), self.counter:
+            # Register error_detection_handler before snapshot to make sure it runs
+            # before the timeline_head_handler, so that assert_no_remaining_reference
+            # sees a fully up-to-date error detector.
+            self.counter.add_handler(self.error_detection_handler)
+            self.setup_snapshot()
+            with patching.set_patching_mode(patching.PatchingMode.NORMAL):
+                yield
 
     def summarize_event(self, event: Event) -> bytearray | bytes:
         data = bytearray()
@@ -743,7 +756,7 @@ class DejaView:
 
                     # add handler to enter debugger at target
                     def handler() -> Generator[None, Event, None]:
-                        with patching.SetPatchingMode(patching.PatchingMode.MUTED):
+                        with patching.set_patching_mode(patching.PatchingMode.MUTED):
                             while True:
                                 event = yield
                                 position = self.counter.position
@@ -759,7 +772,7 @@ class DejaView:
             case ProbeBreakpointRequest():
 
                 def handler() -> Generator[None, Event, None]:
-                    with patching.SetPatchingMode(patching.PatchingMode.MUTED):
+                    with patching.set_patching_mode(patching.PatchingMode.MUTED):
                         last_breakpoint: CounterPosition | None = None
 
                         while True:
@@ -788,10 +801,6 @@ class DejaView:
         StateStore.deserialize(arg.function_states)
         self.apply_debugger_state(arg.debugger_state)
         self._register_exec_replay_handlers(arg.debugger_state.exec_history)
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.patches.__exit__(exc_type, exc_val, exc_tb)
-        self.counter.__exit__(exc_type, exc_val, exc_tb)
 
     def get_pdb(self):
         return self.counter.get_pdb()
@@ -1238,7 +1247,7 @@ class DejaView:
                     frame = self.curframe
                     local_vars = frame.f_locals
                     try:
-                        with patching.SetPatchingMode(patching.PatchingMode.NORMAL):
+                        with patching.set_patching_mode(patching.PatchingMode.NORMAL):
                             exec(  # noqa: S102
                                 compile(stmt + "\n", "<stdin>", "single"),
                                 frame.f_globals,

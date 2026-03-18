@@ -4,13 +4,12 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "tblib>=3.2.2",
-]
+dependencies = ["tblib>=3.2.2"]
 
 [tool.pytest.ini_options]
 testpaths = ["dejaview"]
-# addopts = "-n auto"
+# Some tests such as test_black are grouped to prevent race conditions
+addopts = "--dist=loadgroup"
 
 [dependency-groups]
 dev = [
@@ -48,8 +47,8 @@ ban-relative-imports = "all"
 select = ["E", "F", "W", "A", "PLC", "PLE", "PLW", "I", "TID"]
 
 [tool.ruff]
-extend-exclude = ["dejaview/tests/programs"]
+extend-exclude = ["dejaview/tests/programs", "test/black"]
 
 [tool.mypy]
-exclude = ["^dejaview/tests/programs/"]
+exclude = ["^dejaview/tests/programs/", "^test/black/"]
 check_untyped_defs = true
