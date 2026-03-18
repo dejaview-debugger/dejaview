@@ -2,7 +2,9 @@ import json
 import socket
 import sys
 import threading
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable
+
+from dejaview.patching.patching import PatchingMode, set_patching_mode
 
 # Debug mode flag - set to False to disable debug logging
 DEBUG = False
@@ -23,12 +25,13 @@ class DebugSocketClient:
     def __init__(self, host: str = "127.0.0.1", port: int = 5678):
         self.host = host
         self.port = port
-        self.socket: Optional[socket.socket] = None
+        self.socket: socket.socket | None = None
         self.connected = False
-        self.command_handler: Optional[Callable[[str], None]] = None
-        self.receive_thread: Optional[threading.Thread] = None
+        self.command_handler: Callable[[str], None] | None = None
+        self.receive_thread: threading.Thread | None = None
         self.running = False
 
+    @set_patching_mode(PatchingMode.OFF)
     def connect(self) -> bool:
         """Connect to the debug adapter server."""
         try:
@@ -48,6 +51,7 @@ class DebugSocketClient:
             debug_log(f"Failed to connect to debug adapter: {e}")
             return False
 
+    @set_patching_mode(PatchingMode.OFF)
     def disconnect(self):
         """Disconnect from the debug adapter."""
         self.running = False
@@ -63,6 +67,7 @@ class DebugSocketClient:
         """Set a callback function to handle incoming commands."""
         self.command_handler = handler
 
+    @set_patching_mode(PatchingMode.OFF)
     def _receive_loop(self):
         """Background thread to receive commands from the debug adapter."""
         buffer = ""
@@ -138,12 +143,13 @@ class DebugSocketClient:
         """Notify the debug adapter that the program has terminated."""
         self._send_message({"type": "terminated"})
 
-    def send_response(self, command: str, data: Dict[str, Any]):
+    def send_response(self, command: str, data: dict[str, Any]):
         """Send a response to a command."""
         message = {"type": "response", "command": command, **data}
         self._send_message(message)
 
-    def _send_message(self, data: Dict[str, Any]):
+    @set_patching_mode(PatchingMode.OFF)
+    def _send_message(self, data: dict[str, Any]):
         """Send a JSON message to the debug adapter."""
         if not self.connected or not self.socket:
             return

@@ -1,34 +1,48 @@
 import bdb
+import io
+import json
 import os
 import pdb
 import sys
 import traceback
 import types
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from random import randbytes
 from typing import (
     Any,
-    Dict,
     Generator,
-    List,
     NoReturn,
-    Optional,
     TextIO,
     assert_never,
     cast,
 )
 
-from dejaview.counting.counting import Event, FrameCounter
-from dejaview.counting.error_detection import StreamErrorDetector
+from dejaview.counting.counting import (
+    CounterPosition,
+    CounterPositionGlobal,
+    CounterPositionPattern,
+    CounterPositionStack,
+    Event,
+    FrameCounter,
+)
+from dejaview.counting.error_detection import (
+    StreamErrorDetector,
+    StreamMismatchError,
+    VerifyMode,
+)
 from dejaview.counting.socket_client import DebugSocketClient
 from dejaview.patching import backdoor, patching
 from dejaview.patching.setup import setup_patching
 from dejaview.patching.state_store import StateStore
+from dejaview.snapshots.safe_fork import safe_fork
 from dejaview.snapshots.snapshots import (
     DEFAULT_MAX_SNAPSHOTS,
     DEFAULT_SNAPSHOT_INTERVAL,
     SnapshotManager,
 )
+
+original_print = print  # save original print so we don't use the patched version
 
 # Debug mode flag - set to False to disable debug logging
 DEBUG = False
@@ -37,7 +51,7 @@ DEBUG = False
 def debug_log(*args: Any) -> None:
     """Print debug messages to stderr if DEBUG is enabled."""
     if DEBUG:
-        print(*args, file=sys.stderr, flush=True)
+        original_print(*args, file=sys.stderr, flush=True)
 
 
 class _SafeStdin:
@@ -54,27 +68,6 @@ class _SafeStdin:
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
-
-
-@dataclass
-class CounterPosition:
-    """
-    Represents a unique position in the execution history.
-    The position is defined by the execution count of each frame in the call stack.
-    """
-
-    counts: List[int]
-    instruction_count: int = 0  # global instruction count for snapshot selection
-
-    def decrement(self) -> None:
-        """
-        Decrement the counter position by one step.
-        """
-        if self.counts[-1] == 0:
-            self.counts.pop()
-        else:
-            self.counts[-1] -= 1
-        self.instruction_count -= 1
 
 
 @dataclass
@@ -107,10 +100,14 @@ class DebuggerStopInfo:
 class DebuggerState:
     """Serializable snapshot of debugger state that must survive forks."""
 
-    breakpoints: List[BreakpointState]
+    breakpoints: list[BreakpointState]
     next_breakpoint_id: int
-    breaks: Dict[str, List[int]]
-    commands: Dict[int, List[str]]
+    breaks: dict[str, list[int]]
+    commands: dict[int, list[str]]
+    # Sorted list of (counts_key, statements) pairs in execution order.
+    # Each entry maps a CounterPosition to a list of source strings.
+    # Populated by default() so replay processes can re-execute them.
+    exec_history: list[tuple[tuple, list[str]]] = field(default_factory=list)
 
 
 @dataclass
@@ -119,7 +116,7 @@ class ReverseToTargetRequest:
     Reverse to the given counter position.
     """
 
-    to: CounterPosition | None  # None means we go to the beginning
+    to: CounterPositionPattern | None  # None means we go to the beginning
 
 
 @dataclass
@@ -199,7 +196,7 @@ class ResumeSnapshotArg:
 
     head: CounterPosition  # the current position of the root process
     debugger_state: DebuggerState
-    error_detector_reference: bytes
+    error_detector_reference: VerifyMode
 
     request: RequestForReplay
 
@@ -217,7 +214,7 @@ class DejaView:
     def __init__(
         self,
         *,
-        socket_client: Optional[DebugSocketClient] = None,
+        socket_client: DebugSocketClient | None = None,
         snapshot_interval: int = DEFAULT_SNAPSHOT_INTERVAL,
         max_snapshots: int = DEFAULT_MAX_SNAPSHOTS,
         is_testing: bool = False,
@@ -244,8 +241,15 @@ class DejaView:
         self.socket_client = socket_client
         self.is_testing = is_testing
         self.counter.pdb_factory = lambda: self.CustomPdb(self)
+        # Head position for replay processes
         self.replay_head_reached = False
-        self.pending_breakpoints: list[str] = []  # Store breakpoints until pdb is ready
+        # Store breakpoints until pdb is ready
+        self.pending_breakpoints: list[str] = []
+        # True when viewing historical state (replay in progress)
+        self.replay_active = False
+        # Sorted list of (counts_key, statements) pairs in execution order.
+        # Records every user statement so replay processes can re-execute them.
+        self._exec_history: list[tuple[tuple, list[str]]] = []
         # self.counter.add_handler(print_handler)
 
         # Register snapshot handler to capture snapshots at interval
@@ -254,6 +258,8 @@ class DejaView:
         # Set up command handler immediately if socket is available
         if self.socket_client and self.socket_client.connected:
             self.socket_client.set_command_handler(self._handle_socket_command)
+
+        self.patches: patching.Patches | None = None
 
     def _on_instruction(self, event: Event) -> bool:
         """Handler that checks if a snapshot is needed on each line event.
@@ -280,7 +286,7 @@ class DejaView:
             debug_log(
                 f"DEBUG: capturing snapshot at count={count} (last was {last_count})"
             )
-            arg = self.snapshot_manager.capture_snapshot(instruction_count=count)
+            arg = self.snapshot_manager.capture_snapshot(position=self.counter.position)
             if arg is not None:
                 # We're in a replay process forked from this snapshot
                 self._setup_replay_process(arg)
@@ -299,7 +305,7 @@ class DejaView:
 
         # Queue breakpoint commands until pdb is ready
         if command.startswith("break "):
-            break_arg = command[6:]  # Remove "break " prefix
+            break_arg = command.removeprefix("break ")
             debug_log(f"[DejaView] Processing breakpoint: {break_arg}")
             if self.pdb and self.pdb.is_initialized:
                 # Forward to pdb's handler which has duplicate checking
@@ -327,23 +333,21 @@ class DejaView:
         )
         arg = ResumeSnapshotArg(
             function_states=StateStore.serialize(),
-            head=self.get_current_position(),
+            head=self.counter.position,
             debugger_state=self.serialize_debugger_state(),
-            error_detector_reference=self.error_detector.serialize_reference(),
+            error_detector_reference=self.error_detector.as_verify_mode(),
             request=request,
         )
-
-        # Calculate target count for snapshot selection
-        target_count: int = 0
-        if isinstance(request, ReverseToTargetRequest):
-            if request.to is None:
-                target_count = 0  # Going to beginning
+        self.replay_active = True
+        try:
+            # Calculate target for snapshot selection
+            if isinstance(request, ReverseToTargetRequest) and request.to is not None:
+                target_count = request.to
             else:
-                target_count = request.to.instruction_count
-        elif isinstance(request, ProbeBreakpointRequest):
-            target_count = 0  # Must scan from beginning to find all breakpoints
-
-        return self.snapshot_manager.resume_snapshot(arg, target_count=target_count)
+                target_count = CounterPosition.zero().global_
+            return self.snapshot_manager.resume_snapshot(arg, target_count=target_count)
+        finally:
+            self.replay_active = False
 
     def execute_request_with_return(self, request: RequestForReplay) -> ValueResult:
         ret = self.execute_request_for_replay(request)
@@ -383,7 +387,9 @@ class DejaView:
                 probe_result = self.execute_request_with_return(
                     ProbeBreakpointRequest(before=request.before)
                 )
-                request = ReverseToTargetRequest(to=probe_result.to_counts)
+                to_counts = probe_result.to_counts
+                pattern = to_counts.global_ if to_counts is not None else None
+                request = ReverseToTargetRequest(to=pattern)
             elif isinstance(request, QuitRequest):
                 pdb_instance = self.get_pdb()
                 pdb_instance.do_quit("")
@@ -393,11 +399,6 @@ class DejaView:
                 return
             else:
                 assert_never(request)
-
-    def get_current_position(self) -> CounterPosition:
-        # TODO optimize?
-        counts = [frame.count for frame in self.counter.stack]
-        return CounterPosition(counts, instruction_count=self.counter.count)
 
     def serialize_stopinfo(self) -> DebuggerStopInfo:
         pdb_instance = self.get_pdb()
@@ -450,7 +451,7 @@ class DejaView:
     def serialize_debugger_state(self) -> DebuggerState:
         pdb_instance = self.get_pdb()
 
-        serialized_breakpoints: List[BreakpointState] = []
+        serialized_breakpoints: list[BreakpointState] = []
         for bp in bdb.Breakpoint.bpbynumber:
             if bp is None:
                 continue
@@ -478,6 +479,7 @@ class DejaView:
             next_breakpoint_id=bdb.Breakpoint.next,
             breaks=breaks,
             commands=commands,
+            exec_history=list(self._exec_history),
         )
 
     def apply_debugger_state(self, state: DebuggerState) -> None:
@@ -533,11 +535,82 @@ class DejaView:
         pdb_instance.commands.update(
             {num: list(cmds) for num, cmds in state.commands.items()}
         )
+        # Sync exec history back to the root's authoritative store
+        self._exec_history = list(state.exec_history)
 
-    def step_back(self):
-        pos = self.get_current_position()
-        pos.decrement()
-        request = ReverseToTargetRequest(to=pos)
+    def _register_exec_replay_handlers(
+        self, exec_history: list[tuple[tuple, list[str]]]
+    ) -> None:
+        """
+        Register a counter handler that re-executes user statements during replay.
+        """
+        if not exec_history:
+            return
+
+        stack = [(pos_key, list(stmts)) for pos_key, stmts in exec_history]
+        idx = [0]
+
+        def handler(event: Event) -> bool:
+            if event.event != "line":
+                return False
+            if idx[0] >= len(stack):
+                return True
+
+            pos_key, statements = stack[idx[0]]
+            if tuple(self.counter.position.stack.counts) != pos_key:
+                return False
+
+            frame = event.frame
+            local_vars = frame.f_locals
+            for source in statements:
+                try:
+                    exec(  # noqa: S102
+                        compile(source + "\n", "<stdin>", "single"),
+                        frame.f_globals,
+                        local_vars,
+                    )
+                except Exception:
+                    pass  # Statement may have been a failed expression
+            debug_log(f"[DejaView] Replayed {len(statements)} exec(s) at {pos_key}")
+
+            idx[0] += 1
+            if idx[0] >= len(stack):
+                return True
+            return False
+
+        self.counter.add_handler(handler)
+
+    def reverse_step(self):
+        pos = self.counter.position.global_
+        # Go to the previous instruction globally
+        if pos.count <= 1:
+            print("reverse_step reached the beginning")
+            return
+        pattern = CounterPositionGlobal(pos.count - 1)
+        request = ReverseToTargetRequest(to=pattern)
+        self.execute_request(request)
+
+    def reverse_next(self):
+        pos = self.counter.position.stack
+        counts = list(pos.counts)
+        if counts[-1] == 0:
+            if len(counts) <= 2:
+                print("reverse_next reached the beginning")
+                return
+            counts.pop()
+        else:
+            counts[-1] -= 1
+        pattern = CounterPositionStack(counts)
+        request = ReverseToTargetRequest(to=pattern)
+        self.execute_request(request)
+
+    def reverse_return(self):
+        pos = self.counter.position.stack
+        if len(pos.counts) <= 2:
+            print("reverse_return reached the beginning")
+            return
+        pattern = CounterPositionStack(pos.counts[:-1])
+        request = ReverseToTargetRequest(to=pattern)
         self.execute_request(request)
 
     def reverse_continue(self):
@@ -545,7 +618,7 @@ class DejaView:
         Reverse-continue to the most recent breakpoint before the current position.
         """
 
-        request = ReverseContinueRequest(before=self.get_current_position())
+        request = ReverseContinueRequest(before=self.counter.position)
         self.execute_request(request)
 
     def restart(self):
@@ -556,22 +629,48 @@ class DejaView:
         request = ReverseToTargetRequest(to=None)
         self.execute_request(request)
 
-    def __enter__(self):
-        self.counter.backup()
-        self.setup_snapshot()
-        self.counter.start()
-        self.counter.add_handler(self.error_detection_handler)
-        self.patches = setup_patching()
-        return self
+    @contextmanager
+    def patching_context(self):
+        if not self.patches:
+            self.patches = setup_patching()
+            try:
+                with self.patches:
+                    yield
+            finally:
+                self.patches = None
+        else:
+            yield
 
-    def error_detection_handler(self, event: Event) -> bool:
+    @contextmanager
+    def context(self):
+        assert patching.get_patching_mode() == patching.PatchingMode.OFF
+        with self.patching_context(), self.counter:
+            # Register error_detection_handler before snapshot to make sure it runs
+            # before the timeline_head_handler, so that assert_no_remaining_reference
+            # sees a fully up-to-date error detector.
+            self.counter.add_handler(self.error_detection_handler)
+            self.setup_snapshot()
+            with patching.set_patching_mode(patching.PatchingMode.NORMAL):
+                yield
+
+    def summarize_event(self, event: Event) -> bytearray | bytes:
         data = bytearray()
         data.extend(event.event.encode())  # event type
         data.extend(event.frame.f_lineno.to_bytes(4))  # line number
         if event.event == "call":
             f_code = event.frame.f_code
             data.extend(f_code.co_filename.encode())  # filename
-        self.error_detector.update(data)
+
+        # Human readable debug version
+        # data = (
+        #     f"{event.event=}, "
+        #     f"{event.frame.f_lineno=}, "
+        #     f"{event.frame.f_code.co_filename=}"
+        # ).encode()
+        return data
+
+    def error_detection_handler(self, event: Event) -> bool:
+        self.error_detector.update(self.summarize_event(event))
         return False
 
     def timeline_head_handler(
@@ -583,11 +682,20 @@ class DejaView:
         """
         while True:
             event = yield
-            if event.event != "line":
-                continue
-
-            counts = self.get_current_position()
-            if counts == head:
+            counts = self.counter.position
+            global_eq = counts.global_ == head.global_
+            stack_eq = counts.stack == head.stack
+            if global_eq != stack_eq:
+                raise StreamMismatchError(
+                    count=counts.global_.count,
+                    expected=None,
+                    actual=None,
+                    message="Head position is inconsistent\n"
+                    f"in replay: {counts}\n"
+                    f"in root: {head}\n",
+                )
+            if global_eq:
+                self.error_detector.assert_no_remaining_reference()
                 self.replay_head_reached = True
                 pdb_instance = self.get_pdb()
                 # If pdb would not stop here, immediately hand
@@ -606,7 +714,7 @@ class DejaView:
     def setup_snapshot(self) -> None:
         # capture initial snapshot at instruction count 0
         arg: ResumeSnapshotArg | None = self.snapshot_manager.capture_snapshot(
-            instruction_count=0
+            position=CounterPosition.zero()
         )
         if arg is None:  # we're the root process
             return
@@ -629,10 +737,10 @@ class DejaView:
         self.error_detector.switch_to_verify(arg.error_detector_reference)
         request = arg.request
         match request:
-            case ReverseToTargetRequest():
+            case ReverseToTargetRequest(to=target):
                 pdb_instance = self.get_pdb()
                 # Request to pause at beginning
-                if request.to is None:
+                if target is None:
                     # Pause at beginning
                     pdb_instance.set_step()
                     self.counter.add_handler_generator(
@@ -643,16 +751,16 @@ class DejaView:
                     # Disable all pdb tracing (e.g. breakpoints)
                     self.counter.allow_breakpoints = False
                     # Wait for main doesn't work because it's handled in trace dispatch
-                    # so turn it off since we're not stopping until request.to anyway
+                    # so turn it off since we're not stopping until target anyway
                     pdb_instance._wait_for_mainpyfile = False
 
-                    # add handler to enter debugger at request.to
+                    # add handler to enter debugger at target
                     def handler() -> Generator[None, Event, None]:
-                        with patching.SetPatchingMode(patching.PatchingMode.MUTED):
+                        with patching.set_patching_mode(patching.PatchingMode.MUTED):
                             while True:
                                 event = yield
-                                counts = self.get_current_position()
-                                if request.to == counts:
+                                position = self.counter.position
+                                if target.position_key(position) == target:
                                     self.counter.allow_breakpoints = True
                                     self.counter.breakpoint(event.frame)
                                     break
@@ -664,7 +772,7 @@ class DejaView:
             case ProbeBreakpointRequest():
 
                 def handler() -> Generator[None, Event, None]:
-                    with patching.SetPatchingMode(patching.PatchingMode.MUTED):
+                    with patching.set_patching_mode(patching.PatchingMode.MUTED):
                         last_breakpoint: CounterPosition | None = None
 
                         while True:
@@ -672,7 +780,7 @@ class DejaView:
                             if event.event != "line":
                                 continue
 
-                            counts = self.get_current_position()
+                            counts = self.counter.position
                             if counts == request.before:
                                 target = last_breakpoint
                                 self.snapshot_manager.return_from_replay(
@@ -692,10 +800,7 @@ class DejaView:
         # set function state stores
         StateStore.deserialize(arg.function_states)
         self.apply_debugger_state(arg.debugger_state)
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.patches.__exit__(exc_type, exc_val, exc_tb)
-        self.counter.__exit__(exc_type, exc_val, exc_tb)
+        self._register_exec_replay_handlers(arg.debugger_state.exec_history)
 
     def get_pdb(self):
         return self.counter.get_pdb()
@@ -772,26 +877,50 @@ class DejaView:
             debug_log(f"[PDB] Received socket command: {command}")
 
             # Special handling for query commands that can be executed immediately
-            if command == "locals()":
+            query_commands = {
+                "locals()": ("locals()", "active_locals", self.do_locals),
+                "where": ("where", "active_where", self.do_where),
+            }
+            query_command = query_commands.get(command)
+            if query_command is not None:
+                display_name, pipe_command, handler = query_command
+
+                # Route through pipe during replay so the active process handles it.
+                if self.dejaview.replay_active:
+                    debug_log(
+                        f"[PDB] Routing {display_name} through pipe to replay process"
+                    )
+                    if self.stdin_write_fd is not None:
+                        try:
+                            os.write(self.stdin_write_fd, f"{pipe_command}\n".encode())
+                            debug_log(f"[PDB] {pipe_command} written to pipe")
+                        except Exception as e:
+                            debug_log(f"[PDB] Failed to write to pipe: {e}")
+                else:
+                    try:
+                        debug_log(f"[PDB] Executing {display_name} directly")
+                        handler("")
+                    except Exception as e:
+                        if self.socket_client:
+                            error_msg = (
+                                f"Error executing {display_name}: "
+                                f"{e}\n{traceback.format_exc()}"
+                            )
+                            self.socket_client.send_output(error_msg, "stderr")
+            elif command.startswith("setvar "):
                 try:
-                    debug_log("[PDB] Executing locals() directly")
-                    self.do_locals("")
+                    # Extract the argument string: "name value"
+                    setvar_arg = command.removeprefix("setvar ")
+                    debug_log(f"[PDB] Setting variable: {setvar_arg}")
+                    self.do_setvar(setvar_arg)
                 except Exception as e:
+                    debug_log(
+                        f"[PDB] Failed to set variable: {e}\n{traceback.format_exc()}"
+                    )
                     if self.socket_client:
-                        error_msg = (
-                            f"Error executing locals(): {e}\n{traceback.format_exc()}"
+                        self.socket_client.send_response(
+                            f"setvar {setvar_arg}", {"success": False, "error": str(e)}
                         )
-                        self.socket_client.send_output(error_msg, "stderr")
-            elif command == "where":
-                try:
-                    debug_log("[PDB] Executing where directly")
-                    self.do_where("")
-                except Exception as e:
-                    if self.socket_client:
-                        error_msg = (
-                            f"Error executing where: {e}\n{traceback.format_exc()}"
-                        )
-                        self.socket_client.send_output(error_msg, "stderr")
             else:
                 # For control commands, breaks, and clears, we write to the pipe
                 debug_log(f"[PDB] Writing command to pipe: {command}")
@@ -802,13 +931,36 @@ class DejaView:
                     except Exception as e:
                         debug_log(f"[PDB] Failed to write to pipe: {e}")
 
-        def do_back(self, arg: str):
-            """back
+        def do_reverse_step(self, arg: str):
+            """reverse_step
 
-            Rewind the execution by one step.
+            Reverse to the previous line, stop at the first possible occasion
+            (either in a function that was called or in the current function).
+            "rs" and "rstep" are aliases for "reverse_step".
             """
-            self.dejaview.step_back()
-            debug_log("returned from step_back")
+            self.dejaview.reverse_step()
+            debug_log("returned from reverse_step")
+            return 1
+
+        def do_reverse_next(self, arg: str):
+            """reverse_next
+
+            Reverse execution until the previous line in the current function
+            is reached or the beginning of the function is reached.
+            "rn", "rnext" and "back" are aliases for "reverse_next".
+            """
+            self.dejaview.reverse_next()
+            debug_log("returned from reverse_next")
+            return 1
+
+        def do_reverse_return(self, arg: str):
+            """reverse_return
+
+            Reverse execution until the calling line of the current function.
+            "rr" and "rreturn" are aliases for "reverse_return".
+            """
+            self.dejaview.reverse_return()
+            debug_log("returned from reverse_return")
             return 1
 
         def do_reverse_continue(self, arg: str):
@@ -832,6 +984,13 @@ class DejaView:
                 return 0
             raise pdb.Restart
 
+        do_back = do_reverse_next
+        do_rstep = do_reverse_step
+        do_rs = do_reverse_step
+        do_rnext = do_reverse_next
+        do_rn = do_reverse_next
+        do_rreturn = do_reverse_return
+        do_rr = do_reverse_return
         do_rcontinue = do_reverse_continue
         do_rc = do_reverse_continue
         do_restart = do_run
@@ -846,7 +1005,7 @@ class DejaView:
                 debug_log("at head in replay after command, handing back to root")
                 # We are at head in replay and user asked to continue/step; hand back.
                 self.dejaview.forward_request_to_root(
-                    ContinueRequest(self.dejaview.serialize_stopinfo())
+                    ContinueRequest(stopinfo=self.dejaview.serialize_stopinfo())
                 )
             return stop
 
@@ -1050,6 +1209,188 @@ class DejaView:
                 # Fallback: print locals to stdout
                 if self.curframe:
                     self.message(str(self.curframe.f_locals))
+
+        def do_active_locals(self, arg: str):
+            """Alias for do_locals, used when routing through pipe during replay."""
+            return self.do_locals(arg)
+
+        def do_active_where(self, arg: str):
+            """Alias for do_where, used when routing through pipe during replay."""
+            return self.do_where(arg)
+
+        def _execute_ephemeral(self, stmt: str) -> None:
+            """Execute stmt in a forked child; parent (replay) state is unchanged.
+
+            Child captures stdout, executes the statement, writes result JSON
+            to a pipe, then exits. Parent reads result and sends output to the
+            adapter via socket_client. Used when is_replay_process=True.
+            """
+            if not self.curframe:
+                return
+
+            read_fd, write_fd = os.pipe()
+            try:
+                pid = safe_fork()
+            except Exception:
+                os.close(read_fd)
+                os.close(write_fd)
+                raise
+
+            if pid == 0:
+                # CHILD: execute, write result to pipe, exit
+                os.close(read_fd)
+                result: dict
+                try:
+                    captured = io.StringIO()
+                    old_stdout = sys.stdout
+                    sys.stdout = captured
+                    frame = self.curframe
+                    local_vars = frame.f_locals
+                    try:
+                        with patching.set_patching_mode(patching.PatchingMode.NORMAL):
+                            exec(  # noqa: S102
+                                compile(stmt + "\n", "<stdin>", "single"),
+                                frame.f_globals,
+                                local_vars,
+                            )
+                    finally:
+                        sys.stdout = old_stdout
+                    result = {"success": True, "output": captured.getvalue()}
+                except Exception as exc:
+                    result = {
+                        "success": False,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                raw = (json.dumps(result) + "\n").encode()
+                os.write(write_fd, raw)
+                os.close(write_fd)
+                os._exit(0)
+            else:
+                # PARENT: read result from child, wait, output to terminal + socket
+                os.close(write_fd)
+                chunks = []
+                while True:
+                    chunk = os.read(read_fd, 4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                os.close(read_fd)
+                os.waitpid(pid, 0)
+
+                raw_result = b"".join(chunks).decode("utf-8").strip()
+                try:
+                    result = json.loads(raw_result)
+                except Exception as exc:
+                    result = {
+                        "success": False,
+                        "error_type": "Error",
+                        "error": f"Failed to parse child result: {exc}",
+                    }
+
+                if result.get("success"):
+                    output = result.get("output", "")
+                    if output:
+                        # Write to pdb's stdout (terminal) so pexpect tests see it
+                        self.stdout.write(output)
+                        self.stdout.flush()
+                        if self.socket_client and self.socket_client.connected:
+                            self.socket_client.send_output(output, "stdout")
+                else:
+                    error = result.get("error", "Unknown error")
+                    error_type = result.get("error_type", "")
+                    # Format like pdb's self.error(): "*** ExcType: message"
+                    formatted = f"{error_type}: {error}" if error_type else error
+                    self.error(formatted)
+                    if self.socket_client and self.socket_client.connected:
+                        self.socket_client.send_output(f"*** {formatted}\n", "stderr")
+
+        def default(self, line):
+            """Handle unrecognized commands as Python statements.
+
+            When at the head (not viewing historical state), the statement
+            is recorded so replay processes can re-execute it.
+            """
+            # Record for replay if at head
+            if (
+                not self.dejaview.snapshot_manager.is_replay_process
+                and not self.dejaview.replay_active
+                and self.curframe
+            ):
+                # Strip leading '!' which PDB uses to force exec
+                stmt = line.removeprefix("!")
+                pos_key = tuple(self.dejaview.counter.position.stack.counts)
+                history = self.dejaview._exec_history
+                if history and history[-1][0] == pos_key:
+                    history[-1][1].append(stmt)
+                else:
+                    history.append((pos_key, [stmt]))
+                debug_log(f"[PDB] Recorded statement for replay: {stmt}")
+
+            if self.dejaview.snapshot_manager.is_replay_process:
+                self._execute_ephemeral(stmt=line.removeprefix("!"))
+                return
+
+            super().default(line)
+
+        def do_setvar(self, arg: str):
+            """setvar <name> <value>
+
+            Set a variable in the current frame's local scope.
+            """
+            if not self.curframe:
+                raise ValueError("No current frame")
+
+            # Parse the argument string into var_name and var_value
+            parts = arg.split(" ", 1)
+            if len(parts) != 2:
+                self.error("Usage: setvar <name> <value>")
+                return
+            var_name, var_value = parts
+
+            # Reject while viewing historical state
+            if (
+                self.dejaview.snapshot_manager.is_replay_process
+                or self.dejaview.replay_active
+            ):
+                error_msg = (
+                    "Cannot modify variables while viewing a historical state. "
+                    "Continue to the current execution point first."
+                )
+                debug_log("[PDB] setvar rejected: viewing historical state")
+                if self.socket_client and self.socket_client.connected:
+                    self.socket_client.send_response(
+                        f"setvar {var_name} {var_value}",
+                        {"success": False, "error": error_msg},
+                    )
+                self.error(error_msg)
+                return
+
+            # Delegate to default() which handles exec + recording for replay
+            stmt = f"{var_name} = {var_value}"
+            self.default(f"!{stmt}")
+
+            debug_log(f"[PDB] Set {var_name} via exec")
+
+            if self.socket_client and self.socket_client.connected:
+                # Read back the value to send in the response
+                try:
+                    value = eval(  # noqa: S307
+                        var_name, self.curframe.f_globals, self.curframe.f_locals
+                    )
+                    self.socket_client.send_response(
+                        f"setvar {var_name} {var_value}",
+                        {
+                            "success": True,
+                            "value": repr(value),
+                            "valueType": type(value).__name__,
+                        },
+                    )
+                except Exception as e:
+                    self.socket_client.send_response(
+                        f"setvar {var_name} {var_value}",
+                        {"success": False, "error": str(e)},
+                    )
 
 
 def print_handler(event: Event):

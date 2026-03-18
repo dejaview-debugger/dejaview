@@ -1,7 +1,12 @@
 import re
+import time
+import traceback
 
 import pytest
 
+from dejaview.patching.patching import Patches, PatchingMode, set_patching_mode
+from dejaview.patching.state_store import StateStore
+from dejaview.patching.util import hide_from_traceback
 from dejaview.tests.util import launch_dejaview
 
 
@@ -10,7 +15,20 @@ def extract_out(stdout: str) -> str:
     extract information from output of the form "out: <...>"
     """
     m = re.search(r"out: (.*)", stdout)
-    assert m is not None
+    assert m is not None, stdout
+    return m[1]
+
+
+def extract_out_multiline(stdout: str) -> str:
+    """
+    extract information from output of the form:
+    === BEGIN OUT ===
+    ...
+    === END OUT ===
+    """
+    pattern = r"=== BEGIN OUT ===\r?\n(.*?)\r?\n=== END OUT ==="
+    m = re.search(pattern, stdout, re.DOTALL)
+    assert m is not None, stdout
     return m[1]
 
 
@@ -116,3 +134,104 @@ def test_id_patch_disable():
     assert after_ids == before_ids
     assert after_hashes == before_hashes
     assert after_order == before_order
+
+
+def test_hide_from_traceback():
+    def f1():
+        raise ValueError("error in f1")
+
+    @hide_from_traceback
+    def f2():
+        f1()
+
+    def f3():
+        f2()
+
+    try:
+        f3()
+    except ValueError:
+        tb = traceback.format_exc()
+        print(tb)
+        assert "in f1" in tb
+        assert "in f2" not in tb
+        assert "in hide_from_traceback" not in tb
+        assert "in f3" in tb
+
+
+def test_exception_traceback():
+    d = launch_dejaview(
+        """
+        import socket
+        import traceback
+        try:
+            socket.socket(family=9999)  # invalid family
+        except OSError:
+            print("=== BEGIN OUT ===")
+            print(traceback.format_exc())
+            print("=== END OUT ===")
+        print()
+        """
+    )
+
+    d.assert_line_number(1)
+    d.sendline("c")
+    out1 = extract_out_multiline(d.expect_prompt()).strip()
+    # The patching code is hidden from the traceback
+    assert "dejaview/patching" not in out1
+    # Frames inside the patched function show up
+    assert "socket.py" in out1
+    # The caller frame also shows up
+    assert "socket.socket(family=9999)" in out1
+
+    d.sendline("c")
+    out2 = extract_out_multiline(d.expect_prompt()).strip()
+    assert out1 == out2
+    d.quit()
+
+
+def test_should_patch():
+    num = 0
+
+    class Foo:
+        def add(self, x):
+            nonlocal num
+            num += x
+            return num
+
+    with Patches() as p, set_patching_mode(PatchingMode.NORMAL):
+        p.patch(Foo, "add", should_patch=lambda self, x: x == 2)
+        store = StateStore.get(Foo.add).store
+        assert len(store) == 0
+
+        foo = Foo()
+        assert foo.add(1) == 1
+        assert len(store) == 0  # not patched
+        assert foo.add(2) == 3
+        assert len(store) == 1  # patched
+        assert foo.add(3) == 6
+        assert len(store) == 1  # not patched
+
+
+def test_localtime():
+    d = launch_dejaview(
+        """
+        import time
+        print("out:", time.localtime())
+        print("out:", time.localtime(1234))
+        """
+    )
+
+    d.assert_line_number(1)
+    d.sendline("n")
+    d.assert_line_number(2)
+    d.sendline("n")
+    x1 = extract_out(d.assert_line_number(3))
+    d.sendline("back")
+    d.assert_line_number(2)
+    d.sendline("n")
+    x2 = extract_out(d.assert_line_number(3))
+    assert x1 == x2
+    d.sendline("c")
+    out = extract_out(d.expect_prompt()).strip()
+    assert out == str(time.localtime(1234))
+    d.quit()

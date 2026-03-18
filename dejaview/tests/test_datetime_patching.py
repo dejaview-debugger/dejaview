@@ -6,19 +6,14 @@ import re
 
 import pytest
 
-from dejaview.patching.patching import Patches
-from dejaview.patching.setup import patch_datetime
+from dejaview.patching.setup import datetime_patch
 from dejaview.tests.util import launch_dejaview
 
 
 @pytest.fixture
 def setup_datetime_patching():
-    p = Patches()
-    patch_datetime(p)
-
-    yield p
-
-    p.__exit__(None, None, None)
+    with datetime_patch():
+        yield
 
 
 def test_json_serialization(setup_datetime_patching):
