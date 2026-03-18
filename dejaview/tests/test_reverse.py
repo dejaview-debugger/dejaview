@@ -40,9 +40,15 @@ def test_rstep():
         2
         def bar():
             raise ValueError("error in bar")
+        def generate():
+            yield 1
+            yield from [2, 3]
+            yield 4
         def foo():
             6
             7
+            for x in generate():
+                x
             try:
                 bar()
             except ValueError:
@@ -497,6 +503,29 @@ def test_rc_2_files():
     assert "Line b3" in d.expect_prompt()
     d.sendline("rc")
     assert "Line b2" in d.expect_prompt()
+    d.quit()
+
+
+def test_library_decorator():
+    d = launch_dejaview(
+        """
+        import functools
+        @functools.cache
+        @functools.singledispatch
+        def foo(x):
+            print(123)  # Line 5
+        foo(3)          # Line 6
+        """
+    )
+
+    d.expect_prompt()
+    d.run_to(6)
+    assert "--Call--" in d.send_command("s")
+    d.sendline("s")
+    d.assert_line_number(5)
+    d.send_command("rs")
+    d.sendline("rs")
+    d.assert_line_number(6)
     d.quit()
 
 

@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from types import FrameType
 from typing import Any, Callable, Generator, override
 
-from dejaview.counting import dejaview
+import dejaview.counting
+import dejaview.patching
+import dejaview.snapshots
 from dejaview.patching import patching
 
 
@@ -76,11 +78,14 @@ class CounterPosition:
 
 class FrameCounter:
     def __init__(self) -> None:
+        self.library_prefixes = (
+            sys.prefix,  # site-packages
+            os.path.dirname(os.__file__),  # standard library
+        )
         self.excluded_prefixes = (
-            sys.prefix,
-            os.path.dirname(os.__file__),
-            os.path.dirname(patching.__file__),
-            os.path.dirname(dejaview.__file__),
+            os.path.dirname(dejaview.patching.__file__),
+            os.path.dirname(dejaview.counting.__file__),
+            os.path.dirname(dejaview.snapshots.__file__),
             "<frozen",
             # "<string>",
         )
@@ -148,22 +153,33 @@ class FrameCounter:
             or frame.f_code.co_filename.startswith(self.excluded_prefixes)
         )
 
+    def should_skip_frame_non_recursively(self, frame: FrameType) -> bool:
+        """Determine if this frame should be skipped."""
+        return frame.f_code.co_filename.startswith(self.library_prefixes)
+
     def get_tracer(self, sub_tracer):
         def tracer(frame: FrameType, event: str, arg: Any) -> Any:
-            # Skip frames that should be skipped
-            while self.skipped_frames:
-                # Is the current frame called by the last skipped frame?
-                if frame.f_back == self.skipped_frames[-1]:
-                    self.skipped_frames.append(frame)
-                    # Returning None makes us skip the current function
-                    # but not calls made from it
-                    return None
-                # Otherwise we're done with the last skipped frame so pop it
-                self.skipped_frames.pop()
+            # Frame filtering only needs to happen on call events: returning None
+            # from a call prevents CPython from installing a local tracer, so
+            # line/return/exception events for skipped frames are never delivered.
+            if event == "call":
+                # Skip frames that should be skipped
+                while self.skipped_frames:
+                    # Is the current frame called by the last skipped frame?
+                    if frame.f_back == self.skipped_frames[-1]:
+                        self.skipped_frames.append(frame)
+                        # Returning None makes us skip the current function
+                        # but not calls made from it
+                        return None
+                    # Otherwise we're done with the last skipped frame so pop it
+                    self.skipped_frames.pop()
 
-            if self.should_skip_frame_recursively(frame):
-                self.skipped_frames.append(frame)
-                return None
+                if self.should_skip_frame_recursively(frame):
+                    self.skipped_frames.append(frame)
+                    return None
+
+                if self.should_skip_frame_non_recursively(frame):
+                    return None
 
             # Track the current stack
             if self.stack[-1].being_returned:
@@ -185,11 +201,17 @@ class FrameCounter:
                     # Note that "return" event also triggers when leaving a frame
                     # due to an unhandled exception
                     self.stack[-1].count += 1
+                    # Ensure __return__ is always set for pdb display,
+                    # even when pdb tracing is suppressed during replay
+                    frame.f_locals["__return__"] = arg
                 case "line":
                     self.stack[-1].count += 1
                 case "exception":
                     # Also count exceptions
                     self.stack[-1].count += 1
+                    # Ensure __exception__ is always set for pdb display,
+                    # even when pdb tracing is suppressed during replay
+                    frame.f_locals["__exception__"] = (arg[0], arg[1])
                 case _:
                     raise ValueError(f"Unknown event type: {event}")
 
@@ -213,7 +235,7 @@ class FrameCounter:
                 if actual_sub_tracer:
                     # Disable patching while calling the sub-tracer to not interfere
                     # with the debugger
-                    with patching.SetPatchingMode(patching.PatchingMode.OFF):
+                    with patching.set_patching_mode(patching.PatchingMode.OFF):
                         new_tracer = actual_sub_tracer(frame, event, arg)
                     if new_tracer != sub_tracer:
                         self.sub_tracer = new_tracer
@@ -267,6 +289,10 @@ class FrameCounter:
         def __init__(self, counter: "FrameCounter"):
             super().__init__()
             self.counter = counter
+            # bdb.Bdb only sets botframe inside run(); initialize it so that
+            # set_quit() works even if the program never started (e.g. post-mortem
+            # after a startup failure).
+            self.botframe = None
 
         @override
         def trace_dispatch(self, frame, event, arg):

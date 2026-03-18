@@ -4,7 +4,7 @@ import traceback
 
 import pytest
 
-from dejaview.patching.patching import Patches
+from dejaview.patching.patching import Patches, PatchingMode, set_patching_mode
 from dejaview.patching.state_store import StateStore
 from dejaview.patching.util import hide_from_traceback
 from dejaview.tests.util import launch_dejaview
@@ -198,7 +198,7 @@ def test_should_patch():
             num += x
             return num
 
-    with Patches() as p:
+    with Patches() as p, set_patching_mode(PatchingMode.NORMAL):
         p.patch(Foo, "add", should_patch=lambda self, x: x == 2)
         store = StateStore.get(Foo.add).store
         assert len(store) == 0

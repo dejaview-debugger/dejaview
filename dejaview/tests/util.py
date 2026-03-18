@@ -239,6 +239,45 @@ def launch_dejaview(
     return d
 
 
+def launch_dejaview_with_python(
+    python_bin: str,
+    *args: str,
+    timeout: float = 60,
+    snapshot_interval: int = 2,
+    stress_test: bool = False,
+) -> DejaViewInstance:
+    """
+    Launch DejaView using a specific Python binary (e.g., from an external venv).
+
+    Args:
+        python_bin: Path to the Python binary to use.
+        *args: Arguments passed after `python -m dejaview --snapshot-interval N`
+               (e.g. "-m", "black", "file.py", "--diff").
+        timeout: Timeout for expecting outputs, in seconds.
+        snapshot_interval: Interval for automatic snapshotting in DejaView.
+        stress_test: Whether to pass --testing to DejaView.
+    """
+    command = [
+        python_bin,
+        "-m",
+        "dejaview",
+        "--snapshot-interval",
+        str(snapshot_interval),
+    ]
+    if stress_test:
+        command.append("--testing")
+    command.extend(args)
+    d = DejaViewInstance(
+        command[0],
+        command[1:],
+        cwd=get_repo_root(),
+        encoding="utf-8",
+        timeout=timeout,
+    )
+    d.delaybeforesend = None
+    return d
+
+
 class PropertyTester:
     """Test properties and invariants of the debugger."""
 

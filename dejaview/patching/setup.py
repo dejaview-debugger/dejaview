@@ -71,10 +71,18 @@ def setup_patching():
 
     p.patch(random.SystemRandom, "getrandbits")
     p.patch(random, "random")
-    p.patch(socket.socket, "bind")
-    p.patch(socket.socket, "recvfrom")
-    p.patch(socket.socket, "sendto")
-    p.patch(socket, "socket")
+
+    # AF_UNIX sockets are used for inter-process communication so patching them breaks
+    # multiprocessing (which we use for communicating to replay forks).
+    def skip_system_socket(self: socket.socket, *args, **kwargs):
+        return self.family != socket.AF_UNIX
+
+    # TODO: Merge !24 which properly patches socket.
+    p.patch(socket.socket, "bind", should_patch=skip_system_socket)
+    p.patch(socket.socket, "recvfrom", should_patch=skip_system_socket)
+    p.patch(socket.socket, "sendto", should_patch=skip_system_socket)
+    # Note: socket.socket constructor patch removed because it breaks class identity.
+
     p.patch(builtins, "input")
     p.patch(os, "getpid")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
