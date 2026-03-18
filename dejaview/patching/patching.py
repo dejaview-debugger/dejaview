@@ -1,7 +1,7 @@
 import inspect
-import math
-import random
 import types
+from contextlib import contextmanager
+from contextvars import ContextVar
 from enum import Enum
 from functools import wraps
 from typing import Any, Callable, ContextManager, Sequence, cast
@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from dejaview.patching.patcher import GenericPatcher, Patcher
 from dejaview.patching.state_store import StateStore
+from dejaview.patching.util import hide_from_traceback
 
 ResetFunc = Callable[[int], None]
 CaptureFunc = Callable[[], int]
@@ -33,24 +34,20 @@ class PatchingMode(Enum):
     MUTED = 2
 
 
-class _PatchingState:
-    mode: PatchingMode = PatchingMode.NORMAL
+_patching_mode = ContextVar("patching_mode", default=PatchingMode.OFF)
 
 
 def get_patching_mode():
-    return _PatchingState.mode
+    return _patching_mode.get()
 
 
-class SetPatchingMode:
-    def __init__(self, mode: PatchingMode):
-        self.mode = mode
-
-    def __enter__(self):
-        self.old = _PatchingState.mode
-        _PatchingState.mode = self.mode
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        _PatchingState.mode = self.old
+@contextmanager
+def set_patching_mode(mode: PatchingMode):
+    token = _patching_mode.set(mode)
+    try:
+        yield
+    finally:
+        _patching_mode.reset(token)
 
 
 # Decorator to log function results
@@ -69,6 +66,7 @@ def log_results[F: Callable[..., Any]](
     reset_funcs.append(reset_seq)
 
     @wraps(func)
+    @hide_from_traceback
     def wrapper(*args: Any, **kwargs: Any):
         if get_patching_mode() == PatchingMode.OFF:
             return func(*args, **kwargs)
@@ -167,8 +165,37 @@ class Patches:
         obj: Any,
         attribute: str,
         patcher: type[Patcher[Any, Any]] = GenericPatcher,
+        should_patch: Callable[..., bool] | None = None,
     ) -> None:
-        self.decorate(obj, attribute, lambda f: log_results(f, patcher))
+        """
+        Args:
+            obj: Object containing the attribute to patch.
+            attribute: Name of the attribute to patch.
+            patcher: Patcher class to use for this patch.
+            should_patch:
+                Function that takes the same arguments as the patched function
+                and returns a boolean indicating whether to apply the patch or not.
+                If None, the patch is always applied.
+                If provided, it must be deterministic for the same arguments.
+        """
+        if should_patch is None:
+            self.decorate(obj, attribute, lambda f: log_results(f, patcher))
+        else:
+
+            def factory(func: Callable[..., Any]) -> Callable[..., Any]:
+                patched = log_results(func, patcher)
+
+                @wraps(func)
+                @hide_from_traceback
+                def wrapper(*args: Any, **kwargs: Any) -> Any:
+                    if should_patch(*args, **kwargs):
+                        return patched(*args, **kwargs)
+                    else:
+                        return func(*args, **kwargs)
+
+                return wrapper
+
+            self.decorate(obj, attribute, factory)
 
     def __enter__(self) -> "Patches":
         return self
@@ -182,90 +209,3 @@ class Patches:
         while self.mocks:
             self.mocks[-1].__exit__(exc_type, exc_val, exc_tb)
             self.mocks.pop()
-
-
-# Patching all functions in the current module
-if __name__ == "__main__":
-    log_results_fn = cast(Any, log_results)
-
-    # Example functions to test
-    @log_results_fn
-    def add(a: int, b: int) -> int:
-        return a + b
-
-    @log_results_fn
-    def multiply(a: int, b: int) -> int:
-        return a * b
-
-    patch_func(math.sin)
-    patch_func(random.random)
-    # patch_all_functions_in_module(sys.modules[__name__])
-
-    snapshot = capture()
-
-    # Call the functions to see the logging in action
-
-    # Turn on logging mode
-    log_results_fn.mode = True
-
-    result_add = add(5, 3)
-    result_multiply = multiply(2, 5)
-
-    print(math.sin(0))
-
-    # Turn on replay mode
-    reset(snapshot)
-    log_results_fn.mode = False
-
-    assert add(0, 0) == 8
-    assert multiply(0, 0) == 10
-    assert math.sin(1) == 0.0
-
-    # Turn on loggin mode
-    snapshot = capture()
-    log_results_fn.mode = True
-
-    val1 = random.random()
-    val2 = random.random()
-
-    random.seed(0)  # Reset
-    initial = random.random()
-
-    reset(snapshot)
-    log_results_fn.mode = False
-
-    random.seed(0)  # Reset
-    assert random.random() == val1
-    assert random.random() == val2
-    assert random.random() == initial
-
-    log_results_fn.mode = True
-
-    assert random.random() == initial
-
-    # Test custom patcher
-
-    class CustomPatcher(Patcher[int, int]):
-        @staticmethod
-        def play(func, *args, **kwargs):
-            def run() -> int:
-                return func(*args, **kwargs) + 1
-
-            return run, 1
-
-        @staticmethod
-        def replay(func, state, *args, **kwargs):
-            return state + 2
-
-    patch_func(random.randint, CustomPatcher)
-
-    snapshot = capture()
-    log_results_fn.mode = True
-
-    rand_val = random.randint(5, 5)
-    assert rand_val == 6
-
-    reset(snapshot)
-    log_results_fn.mode = False
-
-    assert random.randint(5, 5) == 3

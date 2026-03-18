@@ -6,10 +6,12 @@ import pytest
 from dejaview.patching.custom_patchers import PopenPatcher
 from dejaview.patching.patching import (
     Patches,
+    PatchingMode,
     capture,
     capture_funcs,
     reset,
     reset_funcs,
+    set_patching_mode,
 )
 from dejaview.patching.state_store import FunctionStateStore, StateStore
 from dejaview.tests.util import launch_dejaview
@@ -35,30 +37,28 @@ def _clean_global_state():
 class TestSubprocessPatching:
     def test_popen_memoized(self):
         """Popen replay returns stored output even with different args."""
-        p = Patches()
-        p.patch(subprocess, "Popen", PopenPatcher)
+        with Patches() as p, set_patching_mode(PatchingMode.NORMAL):
+            p.patch(subprocess, "Popen", PopenPatcher)
 
-        snap = capture()
-        proc = subprocess.Popen(
-            ["echo", "original"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        out, _ = proc.communicate()
+            snap = capture()
+            proc = subprocess.Popen(
+                ["echo", "original"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            out, _ = proc.communicate()
 
-        # Replay: different args, but memoized result returned
-        reset(snap)
-        replay_proc = subprocess.Popen(
-            ["echo", "WRONG"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        replay_out, _ = replay_proc.communicate()
+            # Replay: different args, but memoized result returned
+            reset(snap)
+            replay_proc = subprocess.Popen(
+                ["echo", "WRONG"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            replay_out, _ = replay_proc.communicate()
 
         assert replay_out == out
         assert b"original" in replay_out
-
-        p.__exit__(None, None, None)
 
     def test_run_memoized_e2e(self):
         d = launch_dejaview(

@@ -1,13 +1,13 @@
 import bisect
 import multiprocessing as mp
 import os
-import random
 import signal
 import sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, NoReturn, cast
 
+from dejaview.counting.counting import CounterPosition, CounterPositionPattern
 from dejaview.snapshots.safe_fork import safe_fork
 
 # Debug mode flag - set to False to disable debug logging
@@ -34,32 +34,7 @@ class ProcessType(Enum):
 class SnapshotInfo:
     """Metadata about a snapshot."""
 
-    instruction_count: int  # Global instruction count when snapshot was taken
-    # Note: We don't store CounterPosition here because it's passed at resume time
-
-
-# Test program for debug
-def test():
-    manager = SnapshotManager[str, Any]()
-    res = [0, 1]
-
-    for i in range(10):
-        f_1 = res[-1]
-        f_2 = res[-2]
-        f_next = f_1 + f_2
-        res.append(f_next)
-        pid = os.getpid()
-        print(pid, f_next)
-        if i == 5:
-            state = manager.capture_snapshot(instruction_count=i)
-            if state is not None:
-                print("got state:", state)
-
-    input("input: ")
-    print(pid, "random state:", hash(random.getstate()))
-    print(pid, "random number:", random.randint(0, 100))
-    print(pid, res)
-    manager.resume_snapshot("message from fork", target_count=5)
+    position: CounterPosition
 
 
 class _Snapshot[ArgType, ReturnType]:
@@ -88,7 +63,7 @@ class _Snapshot[ArgType, ReturnType]:
     def resume(self, arg: ArgType) -> ReturnType:
         self.arg_queue.put(arg)
         debug_log(
-            f"DEBUG: resuming snapshot at count={self.info.instruction_count} "
+            f"DEBUG: resuming snapshot at position={self.info.position}"
             f"in replay process"
         )
         status = self.exit_code_queue.get()
@@ -179,23 +154,23 @@ class SnapshotManager[ArgType, ReturnType]:
         if len(self.snapshots) <= 1:
             return False
 
-        new_gap = instruction_count - self.snapshots[-1].info.instruction_count
+        new_gap = instruction_count - self.snapshots[-1].info.position.global_.count
         for i in range(1, len(self.snapshots)):
             existing_gap = (
-                self.snapshots[i].info.instruction_count
-                - self.snapshots[i - 1].info.instruction_count
+                self.snapshots[i].info.position.global_.count
+                - self.snapshots[i - 1].info.position.global_.count
             )
             if existing_gap <= new_gap:
                 return False  # Existing gap is smaller, new snapshot adds value
 
         return True  # New gap is the smallest, snapshot would be wasteful
 
-    def capture_snapshot(self, instruction_count: int = 0) -> ArgType | None:
+    def capture_snapshot(self, position: CounterPosition) -> ArgType | None:
         """
         Capture a snapshot by forking the root process.
 
         Args:
-            instruction_count: The current instruction count for this snapshot
+            position: The counter position for this snapshot
 
         Returns `None` in the root process, and the argument passed to
         `resume_snapshot` in the replay process.
@@ -207,21 +182,21 @@ class SnapshotManager[ArgType, ReturnType]:
         # Evict a snapshot if at capacity, or skip if the new one would
         # be immediately redundant
         if len(self.snapshots) >= self.max_snapshots:
-            if self._should_skip_capture(instruction_count):
-                self._last_snapshot_count = instruction_count
+            if self._should_skip_capture(position.global_.count):
+                self._last_snapshot_count = position.global_.count
                 return None
-            self._evict_snapshot(incoming_count=instruction_count)
+            self._evict_snapshot(incoming_count=position.global_.count)
 
-        snapshot_info = SnapshotInfo(instruction_count=instruction_count)
+        snapshot_info = SnapshotInfo(position=position)
         snapshot = _Snapshot[ArgType, ReturnType](snapshot_info)
         snapshot_pid = safe_fork()
 
         if snapshot_pid != 0:  # root process
             snapshot.snapshot_pid = snapshot_pid
             self.snapshots.append(snapshot)
-            self._last_snapshot_count = instruction_count
+            self._last_snapshot_count = position.global_.count
             debug_log(
-                f"DEBUG: captured snapshot at count={instruction_count}, "
+                f"DEBUG: captured snapshot at position={position.global_}, "
                 f"total snapshots={len(self.snapshots)}"
             )
             return None
@@ -242,27 +217,27 @@ class SnapshotManager[ArgType, ReturnType]:
                 _, status = os.waitpid(replay_pid, 0)
                 snapshot.exit_code_queue.put(os.WEXITSTATUS(status))
 
-    def find_best_snapshot(self, target_count: int) -> int:
+    def find_best_snapshot(self, target_pattern: CounterPositionPattern) -> int:
         """
         Find the index of the best snapshot to resume from.
 
-        Returns the index of the snapshot with the largest instruction_count
-        that is still <= target_count. Uses binary search since snapshots
-        are always sorted by instruction count.
+        Returns the index of the snapshot with the largest position
+        that is still <= target_pattern. Uses binary search since snapshots
+        are always sorted by position.
         """
         if not self.snapshots:
             return 0
         idx = (
             bisect.bisect_right(
                 self.snapshots,
-                target_count,
-                key=lambda s: s.info.instruction_count,
+                target_pattern,
+                key=lambda s: target_pattern.position_key(s.info.position),
             )
             - 1
         )
         if idx == -1:
             raise RuntimeError(
-                f"No snapshot at or before target count {target_count}. "
+                f"No snapshot at or before target count {target_pattern}. "
                 "The initial snapshot may have been killed."
             )
         return idx
@@ -281,21 +256,23 @@ class SnapshotManager[ArgType, ReturnType]:
         best_merged_gap = float("inf")
 
         for candidate in range(1, len(self.snapshots)):
-            prev_count = self.snapshots[candidate - 1].info.instruction_count
+            prev_count = self.snapshots[candidate - 1].info.position.global_.count
             if candidate == len(self.snapshots) - 1:
                 next_count = incoming_count
             else:
-                next_count = self.snapshots[candidate + 1].info.instruction_count
+                next_count = self.snapshots[candidate + 1].info.position.global_.count
             merged_gap = next_count - prev_count
             if merged_gap < best_merged_gap:
                 best_merged_gap = merged_gap
                 best_idx = candidate
 
         evicted = self.snapshots.pop(best_idx)
-        debug_log(f"DEBUG: evicting snapshot at count={evicted.info.instruction_count}")
+        debug_log(f"DEBUG: evicting snapshot at position={evicted.info.position}")
         evicted.terminate()
 
-    def resume_snapshot(self, arg: ArgType, target_count: int) -> ReturnType:
+    def resume_snapshot(
+        self, arg: ArgType, target_count: CounterPositionPattern
+    ) -> ReturnType:
         """
         Resume the best snapshot for the given target count.
 
@@ -320,11 +297,11 @@ class SnapshotManager[ArgType, ReturnType]:
             snapshot = self.snapshots[snapshot_idx]
             debug_log(
                 f"DEBUG: resuming from snapshot {snapshot_idx} "
-                f"at count={snapshot.info.instruction_count} for target={target_count}"
+                f"at position={snapshot.info.position} for target={target_count}"
             )
             if not snapshot.is_alive():
                 debug_log(
-                    f"DEBUG: snapshot at count={snapshot.info.instruction_count} "
+                    f"DEBUG: snapshot at position={snapshot.info.position} "
                     f"is dead, removing and trying next"
                 )
                 self.snapshots.pop(snapshot_idx)
@@ -332,17 +309,3 @@ class SnapshotManager[ArgType, ReturnType]:
             return snapshot.resume(arg)
 
         raise RuntimeError("All snapshot processes are dead")
-
-
-"""
-snapshots contains:
-- instruction count
-- variable state
-- standard library functions
-
-global snapshots contains:
-- highest instruction count
-"""
-
-if __name__ == "__main__":
-    test()
