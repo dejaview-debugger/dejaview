@@ -9,93 +9,75 @@ handles.
 from __future__ import annotations
 
 import io
+import sys
+import urllib.response
 from typing import Any, Callable
 
-from dejaview.patching.patcher import Patcher
+import tblib  # type: ignore[import-untyped]
+import tblib.pickling_support  # type: ignore[import-untyped]
+
+from dejaview.patching.patcher import ExcInfo, Patcher
+from dejaview.patching.util import hide_from_traceback
 
 # ---------------------------------------------------------------------------
 # Networking – urllib
 # ---------------------------------------------------------------------------
 
 
-class _ReplayHTTPResponse:
-    """Lightweight stand-in for ``http.client.HTTPResponse`` during replay."""
-
-    def __init__(
-        self,
-        data: bytes,
-        status: int,
-        reason: str,
-        headers: list[tuple[str, str]],
-        url: str,
-    ) -> None:
-        self._data = data
-        self._stream = io.BytesIO(data)
-        self.status = status
-        self.code = status  # urllib compat
-        self.reason = reason
-        self.url = url
-        self._headers = headers
-
-    def read(self, amt: int | None = None) -> bytes:
-        return self._stream.read(amt)  # type: ignore[arg-type]
-
-    def readline(self) -> bytes:
-        return self._stream.readline()
-
-    def getheader(self, name: str, default: str | None = None) -> str | None:
-        for k, v in self._headers:
-            if k.lower() == name.lower():
-                return v
-        return default
-
-    def getheaders(self) -> list[tuple[str, str]]:
-        return list(self._headers)
-
-    def info(self) -> _ReplayHTTPResponse:
-        return self
-
-    def geturl(self) -> str:
-        return self.url
-
-    def __enter__(self) -> _ReplayHTTPResponse:
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-
 class UrlopenPatcher(Patcher[Any, tuple]):
     """Patcher for ``urllib.request.urlopen``.
 
-    During play the URL is fetched, the full response body is read, and
-    metadata (status, headers, URL) is stored.  On replay a lightweight
-    :class:`_ReplayHTTPResponse` pre-loaded with the stored data is
-    returned.
+    During play the URL is fetched and the full response body is read.
+    Both play and replay return a real :class:`urllib.response.addinfourl`
+    wrapping a :class:`io.BytesIO` of the captured data, so ``isinstance``
+    checks, ``readinto``, and non-HTTP URL schemes (``file:``, ``ftp:``,
+    ``data:``) all work transparently.
     """
 
     @staticmethod
     def play(func: Callable, *args: Any, **kwargs: Any):  # noqa: ANN205
-        resp = func(*args, **kwargs)
+        exc_info: ExcInfo | None = None
+        try:
+            resp = func(*args, **kwargs)
+        except BaseException as err:
+            tblib.pickling_support.install(err)
+            _, ev, tb = sys.exc_info()
+            assert ev is not None
+            exc_info = ExcInfo(e=ev, tb=tblib.Traceback(tb))
+
+        if exc_info is not None:
+            captured = exc_info
+
+            @hide_from_traceback
+            def run_err() -> Any:
+                tb = captured.tb.as_traceback().tb_next
+                raise captured.e.with_traceback(tb)
+
+            return run_err, captured
+
         data: bytes = resp.read()
+        headers = resp.info()
+        url: str = resp.geturl()
         status: int = getattr(resp, "status", getattr(resp, "code", 200))
-        reason: str = getattr(resp, "reason", "OK")
-        url: str = getattr(resp, "url", "")
-        headers: list[tuple[str, str]] = (
-            list(resp.getheaders()) if hasattr(resp, "getheaders") else []
-        )
         resp.close()
-        state = (data, status, reason, headers, url)
+        state = (data, headers, url, status)
 
         def run() -> Any:
-            return _ReplayHTTPResponse(data, status, reason, headers, url)
+            return urllib.response.addinfourl(io.BytesIO(data), headers, url, status)
 
         return run, state
 
     @staticmethod
-    def replay(func: Callable, state: tuple, *args: Any, **kwargs: Any) -> Any:
-        data, status, reason, headers, url = state
-        return _ReplayHTTPResponse(data, status, reason, headers, url)
+    @hide_from_traceback
+    def replay(
+        func: Callable,
+        state: tuple | ExcInfo,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if isinstance(state, ExcInfo):
+            tb = state.tb.as_traceback().tb_next
+            raise state.e.with_traceback(tb)
+
+        data, headers, url, status = state
+        return urllib.response.addinfourl(io.BytesIO(data), headers, url, status)

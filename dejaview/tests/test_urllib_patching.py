@@ -1,4 +1,5 @@
 import urllib.request
+import urllib.response
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
@@ -8,10 +9,12 @@ import pytest
 from dejaview.patching.custom_patchers import UrlopenPatcher
 from dejaview.patching.patching import (
     Patches,
+    PatchingMode,
     capture,
     capture_funcs,
     reset,
     reset_funcs,
+    set_patching_mode,
 )
 from dejaview.patching.state_store import FunctionStateStore, StateStore
 
@@ -58,18 +61,60 @@ def local_server():
 class TestUrllibPatching:
     def test_urlopen_memoized(self, local_server):
         """urlopen() returns stored response despite different URL on replay."""
-        p = Patches()
-        p.patch(urllib.request, "urlopen", UrlopenPatcher)
+        with Patches() as p, set_patching_mode(PatchingMode.NORMAL):
+            p.patch(urllib.request, "urlopen", UrlopenPatcher)
 
-        snap = capture()
-        resp = urllib.request.urlopen(local_server + "/play")
-        body = resp.read()
+            snap = capture()
+            resp = urllib.request.urlopen(local_server + "/play")
+            body = resp.read()
 
-        reset(snap)
-        # Different URL — memoized response should still be returned
-        replay_resp = urllib.request.urlopen(local_server + "/replay")
-        replay_body = replay_resp.read()
+            reset(snap)
+            replay_resp = urllib.request.urlopen(local_server + "/replay")
+            replay_body = replay_resp.read()
 
         assert body == replay_body == b"test body"
 
-        p.__exit__(None, None, None)
+    def test_urlopen_returns_addinfourl(self, local_server):
+        """Replay response is a real addinfourl, not a fake class."""
+        with Patches() as p, set_patching_mode(PatchingMode.NORMAL):
+            p.patch(urllib.request, "urlopen", UrlopenPatcher)
+
+            snap = capture()
+            resp = urllib.request.urlopen(local_server)
+            resp.read()
+
+            reset(snap)
+            replay_resp = urllib.request.urlopen(local_server)
+
+        assert isinstance(replay_resp, urllib.response.addinfourl)
+
+    def test_urlopen_readinto(self, local_server):
+        """readinto() works on the replay response."""
+        with Patches() as p, set_patching_mode(PatchingMode.NORMAL):
+            p.patch(urllib.request, "urlopen", UrlopenPatcher)
+
+            snap = capture()
+            resp = urllib.request.urlopen(local_server)
+            body = resp.read()
+
+            reset(snap)
+            replay_resp = urllib.request.urlopen(local_server)
+            buf = bytearray(len(body))
+            n = replay_resp.readinto(buf)
+
+        assert buf[:n] == body
+
+    def test_urlopen_data_url(self):
+        """urlopen() works with data: URLs."""
+        with Patches() as p, set_patching_mode(PatchingMode.NORMAL):
+            p.patch(urllib.request, "urlopen", UrlopenPatcher)
+
+            snap = capture()
+            resp = urllib.request.urlopen("data:text/plain,hello%20world")
+            body = resp.read()
+
+            reset(snap)
+            replay_resp = urllib.request.urlopen("data:text/plain,different")
+            replay_body = replay_resp.read()
+
+        assert body == replay_body == b"hello world"

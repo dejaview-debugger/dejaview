@@ -153,9 +153,35 @@ class DejaViewInstance(pexpect.spawn):
         output = self.expect_prompt()
         state = self.capture_state()
         assert state.line_number == expected_line_number, (
-            f"Expected line {expected_line_number}, found {state.line_number}"
+            f"Expected line {expected_line_number}, found {state.line_number}\n"
+            f"Full output:\n{output}"
         )
         return output
+
+    def run_to(self, line_number: int) -> str:
+        """
+        Step forward until we reach the given line number, then return the output.
+
+        Args:
+            line_number: The line number to step until.
+        """
+        self.sendline("b " + str(line_number))
+        out = self.expect_prompt()
+        match = re.search(r"Breakpoint (\d+) at", out)
+        assert match, f"Failed to set breakpoint at line {line_number}. Output:\n{out}"
+        breakpoint_number = match.group(1)
+        self.sendline("c")
+        out = self.assert_line_number(line_number)
+        self.sendline("clear " + breakpoint_number)
+        self.expect_prompt()
+        return out
+
+    def restart(self) -> str:
+        """
+        Restart the program and return the output after restart.
+        """
+        self.sendline("restart")
+        return self.expect_prompt()
 
 
 @dataclass
@@ -202,6 +228,45 @@ def launch_dejaview(
         str(tmpdir / main.name),
     ]
     command = [arg for arg in command if arg]  # Remove empty args
+    d = DejaViewInstance(
+        command[0],
+        command[1:],
+        cwd=get_repo_root(),
+        encoding="utf-8",
+        timeout=timeout,
+    )
+    d.delaybeforesend = None
+    return d
+
+
+def launch_dejaview_with_python(
+    python_bin: str,
+    *args: str,
+    timeout: float = 60,
+    snapshot_interval: int = 2,
+    stress_test: bool = False,
+) -> DejaViewInstance:
+    """
+    Launch DejaView using a specific Python binary (e.g., from an external venv).
+
+    Args:
+        python_bin: Path to the Python binary to use.
+        *args: Arguments passed after `python -m dejaview --snapshot-interval N`
+               (e.g. "-m", "black", "file.py", "--diff").
+        timeout: Timeout for expecting outputs, in seconds.
+        snapshot_interval: Interval for automatic snapshotting in DejaView.
+        stress_test: Whether to pass --testing to DejaView.
+    """
+    command = [
+        python_bin,
+        "-m",
+        "dejaview",
+        "--snapshot-interval",
+        str(snapshot_interval),
+    ]
+    if stress_test:
+        command.append("--testing")
+    command.extend(args)
     d = DejaViewInstance(
         command[0],
         command[1:],
