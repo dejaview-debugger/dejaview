@@ -4,9 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "tblib>=3.2.2",
-]
+dependencies = ["tblib>=3.2.2"]
 
 [tool.pytest.ini_options]
 testpaths = ["dejaview"]
