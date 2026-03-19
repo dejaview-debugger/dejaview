@@ -849,6 +849,7 @@ def test_urandom():
     verify_deterministic_memoized_value_util(
         imports=import_stmt,
         expr=expr,
+        compare=operator.ne,
     )
 
 

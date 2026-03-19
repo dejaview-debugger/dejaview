@@ -4,6 +4,7 @@ import getpass
 import io
 import linecache
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -500,10 +501,23 @@ def setup_patching():
     # Note that functions like tzset depend only on environment variables, which
     # should replay deterministically with all patches in place.
 
-    # Random patching relies on `os.urandom` which has now been patched
-    # so there is no need to patch `random` functions separately now.
-    # p.patch(random.SystemRandom, "getrandbits")
-    # p.patch(random, "random")
+    # Patching Random
+    # random still need to be patched despite `os.urandom` being patched
+    # else `dejaview/tests/test_reverse.py::test_random_idempotence` fails
+    p.patch(random.SystemRandom, "getrandbits")
+    p.patch(random, "random")
+
+    # AF_UNIX sockets are used for inter-process communication so patching them breaks
+    # multiprocessing (which we use for communicating to replay forks).
+    def skip_system_socket(self: socket.socket, *args, **kwargs):
+        return self.family != socket.AF_UNIX
+
+    # TODO: Merge !24 which properly patches socket.
+    p.patch(socket.socket, "bind", should_patch=skip_system_socket)
+    p.patch(socket.socket, "recvfrom", should_patch=skip_system_socket)
+    p.patch(socket.socket, "sendto", should_patch=skip_system_socket)
+    # Note: socket.socket constructor patch removed because it breaks class identity.
+
     p.patch(builtins, "input")
     p.patch(getpass, "getpass")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
