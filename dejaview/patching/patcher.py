@@ -95,140 +95,6 @@ class GenericPatcher(Patcher[Any, GenericPatcherState]):
         return GenericPatcher.return_or_raise(state)
 
 
-class _ReplayableIterator:
-    """Iterator wrapper that also acts as a context manager.
-
-    Used by ``IteratorPatcher`` so that patched generators (``os.walk``,
-    ``os.fwalk``) and context-manager iterators (``os.scandir``) can be
-    replayed from a stored list without re-executing the original function.
-
-    The class delegates to a C-level ``list_iterator`` for both
-    ``__iter__`` and ``__next__``, which prevents ``pdb``'s trace hook
-    from stopping on every ``__next__`` call inside list comprehensions
-    (CPython 3.12 PEP 709) and avoids extra frame events that would
-    confuse the step-back snapshot mechanism.
-    """
-
-    def __init__(self, items: list[Any]) -> None:
-        self._iter: Iterator[Any] = iter(items)
-
-    def __iter__(self) -> "_ReplayableIterator":
-        return self
-
-    def __next__(self) -> Any:
-        return next(self._iter)
-
-    def __enter__(self) -> "_ReplayableIterator":
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-
-@dataclass
-class _LazyIteratorState:
-    cached_items: list[Any]
-    exhausted: bool
-
-
-class _RecordingIterator:
-    """Iterator that lazily records values consumed during play."""
-
-    def __init__(self, source: Iterator[Any], state: _LazyIteratorState) -> None:
-        self._source = source
-        self._state = state
-        self._index = 0
-
-    def __iter__(self) -> "_RecordingIterator":
-        return self
-
-    def __next__(self) -> Any:
-        if self._index < len(self._state.cached_items):
-            item = self._state.cached_items[self._index]
-            self._index += 1
-            return item
-        if self._state.exhausted:
-            raise StopIteration
-
-        try:
-            item = next(self._source)
-        except StopIteration:
-            self._state.exhausted = True
-            raise
-        self._state.cached_items.append(item)
-        self._index += 1
-        return item
-
-    def __enter__(self) -> "_RecordingIterator":
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        self.close()
-
-    def close(self) -> None:
-        close = getattr(self._source, "close", None)
-        if callable(close):
-            close()
-
-
-class IteratorPatcher(
-    Patcher[Any, tuple[_LazyIteratorState | None, BaseException | None]]
-):
-    """Patcher for iterator/generator-returning functions.
-
-    During *play*, only values actually consumed by user code are recorded.
-    During *replay*, a fresh
-    ``_ReplayableIterator`` over the stored list is returned so callers can
-    iterate again without re-executing the original function.
-
-    .. note::
-
-    The cached items must be picklable because the snapshot
-       mechanism sends ``StateStore`` data through ``multiprocessing``
-       queues.  For ``os.scandir`` (whose ``DirEntry`` objects are
-       **not** picklable), use ``ScanDirPatcher`` instead.
-    """
-
-    @staticmethod
-    def play(
-        func: Callable[..., Any], *args: Any, **kwargs: Any
-    ) -> tuple[
-        Callable[[], Any], tuple[_LazyIteratorState | None, BaseException | None]
-    ]:
-        state: _LazyIteratorState | None = None
-        ex: BaseException | None = None
-        try:
-            source = iter(func(*args, **kwargs))
-            state = _LazyIteratorState(cached_items=[], exhausted=False)
-        except Exception as err:  # noqa: BLE001
-            ex = err
-        packed_state = (state, ex)
-
-        def run() -> Any:
-            if ex is not None:
-                raise ex
-            assert state is not None
-            return _RecordingIterator(source, state)
-
-        return run, packed_state
-
-    @staticmethod
-    def replay(
-        func: Callable[..., Any],
-        state: tuple[_LazyIteratorState | None, BaseException | None],
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
-        lazy_state, ex = state
-        if ex is not None:
-            raise ex
-        assert lazy_state is not None
-        return _ReplayableIterator(lazy_state.cached_items)
-
-
 @dataclass
 class _CallOutcome:
     value: Any = None
@@ -435,6 +301,7 @@ class ScanDirPatcher(Patcher[Any, tuple[_ScanDirState | None, BaseException | No
         *args: Any,
         **kwargs: Any,
     ) -> Any:
+        print(f"replay for scandir is called with state: {state}")
         scan_state, ex = state
         if ex is not None:
             raise ex

@@ -1522,8 +1522,9 @@ def test_posix_spawnp():
 def test_walk():
     """Test that os.walk is deterministic on replay.
 
-    os.walk is patched with IteratorPatcher which eagerly consumes
-    the generator during play and returns a fresh iterator during replay.
+    os.walk is intentionally not patched directly.
+    It remains deterministic because it delegates to patched low-level
+    functions (notably os.scandir).
 
     Uses forward-only determinism testing because iterator-based patchers
     create intermediate frame events that prevent back-stepping from
@@ -1551,9 +1552,8 @@ def test_walk():
 def test_scandir():
     """Test that os.scandir is deterministic on replay.
 
-    os.scandir is patched with ScanDirPatcher which eagerly consumes
-    the iterator during play and returns a fresh _ReplayableIterator
-    that also supports context-manager usage.
+    os.scandir is patched with ScanDirPatcher, which records consumed
+    entries during play and replays them via a scandir-like iterator.
 
     Uses forward-only determinism testing because iterator-based patchers
     create intermediate frame events that prevent back-stepping from
