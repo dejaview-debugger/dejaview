@@ -993,6 +993,180 @@ def test_system_replay():
     )
 
 
+# --- Environment mutation ---
+def test_putenv_replay():
+    key = f"DEJAVIEW_TEST_PUTENV_REPLAY_{_real_os.getpid()}_{id(object())}"
+    value = "__dejaview_putenv_value__"
+
+    had_original = key in _real_os.environ
+    original_value = _real_os.environ.get(key)
+
+    try:
+        _real_os.unsetenv(key)
+        _real_os.environ.pop(key, None)
+
+        d = launch_dejaview(
+            f"""
+            import os
+            import ctypes
+            key = {repr(key)}
+            value = {repr(value)}
+            libc = ctypes.CDLL(None)
+            libc.getenv.argtypes = [ctypes.c_char_p]
+            libc.getenv.restype = ctypes.c_char_p
+            print(libc.getenv(key.encode()) is not None)
+            os.putenv(key, value)
+            print(libc.getenv(key.encode()) is not None)
+            print()
+            """
+        )
+
+        try:
+            d.assert_line_number(1)
+            d.sendline("n")
+            d.assert_line_number(2)
+            d.sendline("n")
+            d.assert_line_number(3)
+            d.sendline("n")
+            d.assert_line_number(4)
+            d.sendline("n")
+            d.assert_line_number(5)
+            d.sendline("n")
+            d.assert_line_number(6)
+            d.sendline("n")
+            d.assert_line_number(7)
+            d.sendline("n")
+            d.assert_line_number(8)
+            d.sendline("n")
+            first_play_out = d.assert_line_number(9)
+            first_play = ast.literal_eval(_get_printed_value(first_play_out))
+            d.sendline("n")
+            d.assert_line_number(10)
+            d.sendline("n")
+            second_play_out = d.assert_line_number(11)
+            second_play = ast.literal_eval(_get_printed_value(second_play_out))
+
+            assert first_play is False
+            assert second_play is True
+
+            d.sendline("back")
+            d.assert_line_number(10)
+            d.sendline("back")
+            d.assert_line_number(9)
+            d.sendline("back")
+            d.assert_line_number(8)
+
+            d.sendline("n")
+            first_replay_out = d.assert_line_number(9)
+            first_replay = ast.literal_eval(_get_printed_value(first_replay_out))
+            d.sendline("n")
+            d.assert_line_number(10)
+            d.sendline("n")
+            second_replay_out = d.assert_line_number(11)
+            second_replay = ast.literal_eval(_get_printed_value(second_replay_out))
+
+            assert first_replay is False
+            assert second_replay is False
+        finally:
+            d.quit()
+    finally:
+        if had_original:
+            assert original_value is not None
+            _real_os.putenv(key, original_value)
+            _real_os.environ[key] = original_value
+        else:
+            _real_os.unsetenv(key)
+            _real_os.environ.pop(key, None)
+
+
+def test_unsetenv_replay():
+    key = f"DEJAVIEW_TEST_UNSETENV_REPLAY_{_real_os.getpid()}_{id(object())}"
+    seed = "__dejaview_unsetenv_seed__"
+
+    had_original = key in _real_os.environ
+    original_value = _real_os.environ.get(key)
+
+    try:
+        _real_os.putenv(key, seed)
+        _real_os.environ[key] = seed
+
+        d = launch_dejaview(
+            f"""
+            import os
+            import ctypes
+            key = {repr(key)}
+            seed = {repr(seed)}
+            libc = ctypes.CDLL(None)
+            libc.getenv.argtypes = [ctypes.c_char_p]
+            libc.getenv.restype = ctypes.c_char_p
+            os.putenv(key, seed)
+            print(libc.getenv(key.encode()) is not None)
+            os.unsetenv(key)
+            print(libc.getenv(key.encode()) is not None)
+            print()
+            """
+        )
+
+        try:
+            d.assert_line_number(1)
+            d.sendline("n")
+            d.assert_line_number(2)
+            d.sendline("n")
+            d.assert_line_number(3)
+            d.sendline("n")
+            d.assert_line_number(4)
+            d.sendline("n")
+            d.assert_line_number(5)
+            d.sendline("n")
+            d.assert_line_number(6)
+            d.sendline("n")
+            d.assert_line_number(7)
+            d.sendline("n")
+            d.assert_line_number(8)
+            d.sendline("n")
+            d.assert_line_number(9)
+            d.sendline("n")
+            first_play_out = d.assert_line_number(10)
+            first_play = ast.literal_eval(_get_printed_value(first_play_out))
+            d.sendline("n")
+            d.assert_line_number(11)
+            d.sendline("n")
+            second_play_out = d.assert_line_number(12)
+            second_play = ast.literal_eval(_get_printed_value(second_play_out))
+
+            assert first_play is True
+            assert second_play is False
+
+            d.sendline("back")
+            d.assert_line_number(11)
+            d.sendline("back")
+            d.assert_line_number(10)
+            d.sendline("back")
+            d.assert_line_number(9)
+
+            d.sendline("n")
+            first_replay_out = d.assert_line_number(10)
+            first_replay = ast.literal_eval(_get_printed_value(first_replay_out))
+            d.sendline("n")
+            d.assert_line_number(11)
+            d.sendline("n")
+            second_replay_out = d.assert_line_number(12)
+            second_replay = ast.literal_eval(_get_printed_value(second_replay_out))
+
+            assert first_replay is True
+            assert second_replay is True
+        finally:
+            d.quit()
+    finally:
+        if had_original:
+            assert original_value is not None
+            _real_os.putenv(key, original_value)
+            _real_os.environ[key] = original_value
+        else:
+            _real_os.unsetenv(key)
+            _real_os.environ.pop(key, None)
+
+
 # ==============================================================================
 # Process management
 # ==============================================================================
@@ -1432,7 +1606,9 @@ def test_scandir_delete_file():
                     isinstance(name, str) for name in value
                 ):
                     return value
-            raise AssertionError(f"No printed filename list found in output:\n{step_output}")
+            raise AssertionError(
+                f"No printed filename list found in output:\n{step_output}"
+            )
 
         expected_before = ["a.txt", "b.txt", "c.txt"]
         expected_after = ["a.txt", "c.txt"]
@@ -1514,7 +1690,9 @@ def test_scandir_add_file():
                     isinstance(name, str) for name in value
                 ):
                     return value
-            raise AssertionError(f"No printed filename list found in output:\n{step_output}")
+            raise AssertionError(
+                f"No printed filename list found in output:\n{step_output}"
+            )
 
         expected_before = ["a.txt", "b.txt", "c.txt"]
         expected_after = ["a.txt", "b.txt", "c.txt", "new_file.txt"]
@@ -1662,7 +1840,9 @@ def test_os_open_read():
                     continue
                 if isinstance(value, bytes):
                     return value
-            raise AssertionError(f"No printed bytes value found in output:\n{step_output}")
+            raise AssertionError(
+                f"No printed bytes value found in output:\n{step_output}"
+            )
 
         # Play first read.
         d.assert_line_number(1)
@@ -1687,7 +1867,8 @@ def test_os_open_read():
         assert value_first_play == b"hello world"
         assert value_second_play == b"hello world"
         assert value_first_play == value_first_replay, (
-            f"first read replay mismatch: {value_first_play!r} vs {value_first_replay!r}"
+            f"first read replay mismatch: {value_first_play!r} vs "
+            f"{value_first_replay!r}"
         )
         d.quit()
 
@@ -1700,8 +1881,10 @@ def test_os_write():
         d = launch_dejaview(
             f"""
             import os
-            print(os.write(os.open({repr(str(test_file))}, os.O_WRONLY | os.O_CREAT), b'hello'))
-            print(os.write(os.open({repr(str(test_file))}, os.O_WRONLY | os.O_CREAT), b'hello'))
+            print(os.write(os.open({repr(str(test_file))},\
+                  os.O_WRONLY | os.O_CREAT), b'hello'))
+            print(os.write(os.open({repr(str(test_file))},\
+                  os.O_WRONLY | os.O_CREAT), b'hello'))
             print()
             """
         )
@@ -1717,7 +1900,9 @@ def test_os_write():
                     continue
                 if isinstance(value, int):
                     return value
-            raise AssertionError(f"No printed integer value found in output:\n{step_output}")
+            raise AssertionError(
+                f"No printed integer value found in output:\n{step_output}"
+            )
 
         # Execute first and second writes forward and verify stable output.
         d.assert_line_number(1)

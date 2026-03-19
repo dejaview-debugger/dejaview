@@ -4,7 +4,6 @@ import getpass
 import io
 import linecache
 import os
-import random
 import socket
 import subprocess
 import sys
@@ -303,6 +302,9 @@ def patch_os(p: Patches):
     p.patch(os, "removexattr")
 
     # --- Environment mutation ---
+    # These functions are patched because they have side effects
+    # for the environments. They modify the envionrment variables of
+    # the process and those side effects shoudl not be run during replay
     p.patch(os, "putenv")
     p.patch(os, "unsetenv")
 
@@ -498,8 +500,10 @@ def setup_patching():
     # Note that functions like tzset depend only on environment variables, which
     # should replay deterministically with all patches in place.
 
-    p.patch(random.SystemRandom, "getrandbits")
-    p.patch(random, "random")
+    # Random patching relies on `os.urandom` which has now been patched
+    # so there is no need to patch `random` functions separately now.
+    # p.patch(random.SystemRandom, "getrandbits")
+    # p.patch(random, "random")
     p.patch(builtins, "input")
     p.patch(getpass, "getpass")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
