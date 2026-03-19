@@ -1193,17 +1193,17 @@ def _verify_spawn_like_replay(spawn_stmt: str) -> None:
 
     To explicitly verify no process is spawned on replay, we probe whether the
     replayed PID still exists using ``os.kill(pid, 0)`` under
-    ``SetPatchingMode(PatchingMode.OFF)``. The probe uses an ``if`` branch to
+    ``set_patching_mode(PatchingMode.OFF)``. The probe uses an ``if`` branch to
     emit ``"child-alive"`` or ``"child-gone"``.
     """
     d = launch_dejaview(
         f"""
         import os
-        from dejaview.patching.patching import PatchingMode, SetPatchingMode
+        from dejaview.patching.patching import PatchingMode, set_patching_mode
 
         def child_liveness_marker(pid):
             alive = False
-            with SetPatchingMode(PatchingMode.OFF):
+            with set_patching_mode(PatchingMode.OFF):
                 try:
                     os.kill(pid, 0)
                     alive = True
@@ -1401,6 +1401,170 @@ def test_scandir():
         )
 
 
+def test_scandir_delete_file():
+    """Test that os.scandir reflects a deleted file and replays deterministically."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        Path(tmpdir, "a.txt").touch()
+        Path(tmpdir, "b.txt").touch()
+        Path(tmpdir, "c.txt").touch()
+        deleted_file = Path(tmpdir, "b.txt")
+
+        d = launch_dejaview(
+            f"""
+            import os
+            print(sorted(e.name for e in os.scandir({repr(tmpdir)})))
+            os.remove({repr(str(deleted_file))})
+            print(sorted(e.name for e in os.scandir({repr(tmpdir)})))
+            print()
+            """
+        )
+
+        def parse_printed_names(step_output: str) -> list[str]:
+            for raw_line in step_output.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    value = ast.literal_eval(line)
+                except (SyntaxError, ValueError):
+                    continue
+                if isinstance(value, list) and all(
+                    isinstance(name, str) for name in value
+                ):
+                    return value
+            raise AssertionError(f"No printed filename list found in output:\n{step_output}")
+
+        expected_before = ["a.txt", "b.txt", "c.txt"]
+        expected_after = ["a.txt", "c.txt"]
+
+        # Play + replay around first scandir print (before deletion).
+        d.assert_line_number(1)
+        d.sendline("n")
+        d.assert_line_number(2)
+        d.sendline("n")
+        before_play_out = d.assert_line_number(3)
+        names_before_play = parse_printed_names(before_play_out)
+
+        d.sendline("back")
+        d.assert_line_number(2)
+        d.sendline("n")
+        before_replay_out = d.assert_line_number(3)
+        names_before_replay = parse_printed_names(before_replay_out)
+
+        assert names_before_play == expected_before, (
+            f"Expected first scandir output {expected_before!r}, "
+            f"got {names_before_play!r}"
+        )
+        assert names_before_replay == expected_before, (
+            f"Expected replay first scandir output {expected_before!r}, "
+            f"got {names_before_replay!r}"
+        )
+
+        # Play + replay around second scandir print (after deletion).
+        d.sendline("n")
+        d.assert_line_number(4)
+        d.sendline("n")
+        after_play_out = d.assert_line_number(5)
+        names_after_play = parse_printed_names(after_play_out)
+        d.sendline("back")
+        d.assert_line_number(4)
+        d.sendline("n")
+        after_replay_out = d.assert_line_number(5)
+        names_after_replay = parse_printed_names(after_replay_out)
+
+        assert names_after_play == expected_after, (
+            f"Expected second scandir output {expected_after!r}, "
+            f"got {names_after_play!r}"
+        )
+        assert names_after_replay == expected_after, (
+            f"Expected replay second scandir output {expected_after!r}, "
+            f"got {names_after_replay!r}"
+        )
+        d.quit()
+
+
+def test_scandir_add_file():
+    """Test that os.scandir reflects an added file and replays deterministically."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        Path(tmpdir, "a.txt").touch()
+        Path(tmpdir, "b.txt").touch()
+        Path(tmpdir, "c.txt").touch()
+        new_file = Path(tmpdir, "new_file.txt")
+
+        d = launch_dejaview(
+            f"""
+            import os
+            print(sorted(e.name for e in os.scandir({repr(tmpdir)})))
+            os.open({repr(str(new_file))}, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            print(sorted(e.name for e in os.scandir({repr(tmpdir)})))
+            print()
+            """
+        )
+
+        def parse_printed_names(step_output: str) -> list[str]:
+            for raw_line in step_output.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    value = ast.literal_eval(line)
+                except (SyntaxError, ValueError):
+                    continue
+                if isinstance(value, list) and all(
+                    isinstance(name, str) for name in value
+                ):
+                    return value
+            raise AssertionError(f"No printed filename list found in output:\n{step_output}")
+
+        expected_before = ["a.txt", "b.txt", "c.txt"]
+        expected_after = ["a.txt", "b.txt", "c.txt", "new_file.txt"]
+
+        # Play + replay around first scandir print (before creation).
+        d.assert_line_number(1)
+        d.sendline("n")
+        d.assert_line_number(2)
+        d.sendline("n")
+        before_play_out = d.assert_line_number(3)
+        names_before_play = parse_printed_names(before_play_out)
+
+        d.sendline("back")
+        d.assert_line_number(2)
+        d.sendline("n")
+        before_replay_out = d.assert_line_number(3)
+        names_before_replay = parse_printed_names(before_replay_out)
+
+        assert names_before_play == expected_before, (
+            f"Expected first scandir output {expected_before!r}, "
+            f"got {names_before_play!r}"
+        )
+        assert names_before_replay == expected_before, (
+            f"Expected replay first scandir output {expected_before!r}, "
+            f"got {names_before_replay!r}"
+        )
+
+        # Play + replay around second scandir print (after creation).
+        d.sendline("n")
+        d.assert_line_number(4)
+        d.sendline("n")
+        after_play_out = d.assert_line_number(5)
+        names_after_play = parse_printed_names(after_play_out)
+        d.sendline("back")
+        d.assert_line_number(4)
+        d.sendline("n")
+        after_replay_out = d.assert_line_number(5)
+        names_after_replay = parse_printed_names(after_replay_out)
+
+        assert names_after_play == expected_after, (
+            f"Expected second scandir output {expected_after!r}, "
+            f"got {names_after_play!r}"
+        )
+        assert names_after_replay == expected_after, (
+            f"Expected replay second scandir output {expected_after!r}, "
+            f"got {names_after_replay!r}"
+        )
+        d.quit()
+
+
 def test_scandir_typing():
     """
     Patching scandir uses the `ScandirPatcher`.
@@ -1478,26 +1642,102 @@ def test_os_open_read():
         test_file = Path(tmpdir, "io_test.txt")
         test_file.write_text("hello world")
 
-        verify_deterministic_memoized_value_util(
-            imports="import os",
-            expr=f"os.read(os.open({repr(str(test_file))}, os.O_RDONLY), 100)",
+        d = launch_dejaview(
+            f"""
+            import os
+            print(os.read(os.open({repr(str(test_file))}, os.O_RDONLY), 100))
+            print(os.read(os.open({repr(str(test_file))}, os.O_RDONLY), 100))
+            print()
+            """
         )
+
+        def parse_printed_value(step_output: str) -> bytes:
+            for raw_line in step_output.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    value = ast.literal_eval(line)
+                except (SyntaxError, ValueError):
+                    continue
+                if isinstance(value, bytes):
+                    return value
+            raise AssertionError(f"No printed bytes value found in output:\n{step_output}")
+
+        # Play first read.
+        d.assert_line_number(1)
+        d.sendline("n")
+        d.assert_line_number(2)
+        d.sendline("n")
+        first_play_out = d.assert_line_number(3)
+        value_first_play = parse_printed_value(first_play_out)
+
+        # Replay first read from line 2.
+        d.sendline("back")
+        d.assert_line_number(2)
+        d.sendline("n")
+        first_replay_out = d.assert_line_number(3)
+        value_first_replay = parse_printed_value(first_replay_out)
+
+        # Execute second read forward.
+        d.sendline("n")
+        second_play_out = d.assert_line_number(4)
+        value_second_play = parse_printed_value(second_play_out)
+
+        assert value_first_play == b"hello world"
+        assert value_second_play == b"hello world"
+        assert value_first_play == value_first_replay, (
+            f"first read replay mismatch: {value_first_play!r} vs {value_first_replay!r}"
+        )
+        d.quit()
 
 
 def test_os_write():
-    """Test that os.write is deterministic on replay."""
+    """Test that os.write produces deterministic forward outputs."""
     with tempfile.TemporaryDirectory() as tmpdir:
         test_file = Path(tmpdir, "write_test.txt")
 
-        verify_deterministic_memoized_value_util(
-            imports="import os",
-            expr=(
-                f"os.write("
-                f"os.open({repr(str(test_file))}, os.O_WRONLY | os.O_CREAT), "
-                f"b'hello')"
-            ),
-            compare=operator.eq,
+        d = launch_dejaview(
+            f"""
+            import os
+            print(os.write(os.open({repr(str(test_file))}, os.O_WRONLY | os.O_CREAT), b'hello'))
+            print(os.write(os.open({repr(str(test_file))}, os.O_WRONLY | os.O_CREAT), b'hello'))
+            print()
+            """
         )
+
+        def parse_printed_value(step_output: str) -> int:
+            for raw_line in step_output.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    value = ast.literal_eval(line)
+                except (SyntaxError, ValueError):
+                    continue
+                if isinstance(value, int):
+                    return value
+            raise AssertionError(f"No printed integer value found in output:\n{step_output}")
+
+        # Execute first and second writes forward and verify stable output.
+        d.assert_line_number(1)
+        d.sendline("n")
+        d.assert_line_number(2)
+        d.sendline("n")
+        first_play_out = d.assert_line_number(3)
+        value_first_play = parse_printed_value(first_play_out)
+
+        # Execute second write forward.
+        d.sendline("n")
+        second_play_out = d.assert_line_number(4)
+        value_second_play = parse_printed_value(second_play_out)
+
+        assert value_first_play == 5
+        assert value_second_play == 5
+        assert value_first_play == value_second_play, (
+            f"forward write mismatch: {value_first_play!r} vs {value_second_play!r}"
+        )
+        d.quit()
 
 
 def test_os_pipe():

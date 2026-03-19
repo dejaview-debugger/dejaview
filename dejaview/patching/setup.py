@@ -24,8 +24,8 @@ from dejaview.patching.patcher import ScanDirPatcher
 from dejaview.patching.patching import (
     Patches,
     PatchingMode,
-    set_patching_mode,
     get_patching_mode,
+    set_patching_mode,
 )
 
 
@@ -397,7 +397,7 @@ def patch_os(p: Patches):
     # SKIPPED – os.forkpty
     #   Produces a PTY-backed child process with terminal side-effects.
     #   Left unpatched for now; os.fork is patched and safe_fork uses
-    #   SetPatchingMode(PatchingMode.OFF) for debugger-internal forks.
+    #   set_patching_mode(PatchingMode.OFF) for debugger-internal forks.
     #
     # SKIPPED – os.abort / os._exit
     #   Process-termination primitives.  During play they kill the
@@ -417,18 +417,6 @@ def patch_os(p: Patches):
     # ================================================================
     # Iterator patchers record values lazily as user code consumes them.
     # Replay only reproduces the already-consumed prefix.
-
-    # Copilot summary of what it did:
-    """
-    patcher.py — Restored __next__ and __iter__ returning self on
-    _ReplayableIterator (needed for os.walk which calls next() on scandir
-    results internally). Now delegates to a C-level list_iterator.
-    test_os_patching.py — Rewrote test_walk and test_scandir to use
-    PropertyTester.test_determinism_property (forward-only multi-run
-    determinism check) instead of verify_deterministic_memoized_value_util
-    (which uses back-stepping). Added DebugCommand and PropertyTester imports.
-    Claude Opu
-    """
 
     # os.scandir returns a context-manager iterator that cannot be
     # re-iterated once exhausted. ScanDirPatcher records consumed

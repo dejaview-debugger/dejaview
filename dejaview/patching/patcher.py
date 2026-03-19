@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Protocol
@@ -229,11 +230,99 @@ class IteratorPatcher(
 
 
 @dataclass
+class _CallOutcome:
+    value: Any = None
+    error: BaseException | None = None
+
+    def unwrap(self) -> Any:
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
+def _capture_outcome(func: Callable[[], Any]) -> _CallOutcome:
+    try:
+        return _CallOutcome(value=func())
+    except BaseException as err:  # noqa: BLE001
+        return _CallOutcome(error=err)
+
+
+@dataclass
+class _CachedDirEntry:
+    name: str | bytes
+    path: str | bytes
+    inode_outcome: _CallOutcome
+    stat_follow_outcome: _CallOutcome
+    stat_nofollow_outcome: _CallOutcome
+    is_dir_follow_outcome: _CallOutcome
+    is_dir_nofollow_outcome: _CallOutcome
+    is_file_follow_outcome: _CallOutcome
+    is_file_nofollow_outcome: _CallOutcome
+    is_symlink_outcome: _CallOutcome
+
+
+@dataclass
 class _ScanDirState:
-    call_args: tuple[Any, ...]
-    call_kwargs: dict[str, Any]
-    cached_names: list[str | bytes]
+    cached_entries: list[_CachedDirEntry]
     exhausted: bool
+
+
+def _cache_direntry(entry: Any) -> _CachedDirEntry:
+    return _CachedDirEntry(
+        name=entry.name,
+        path=entry.path,
+        inode_outcome=_capture_outcome(entry.inode),
+        stat_follow_outcome=_capture_outcome(lambda: entry.stat(follow_symlinks=True)),
+        stat_nofollow_outcome=_capture_outcome(
+            lambda: entry.stat(follow_symlinks=False)
+        ),
+        is_dir_follow_outcome=_capture_outcome(
+            lambda: entry.is_dir(follow_symlinks=True)
+        ),
+        is_dir_nofollow_outcome=_capture_outcome(
+            lambda: entry.is_dir(follow_symlinks=False)
+        ),
+        is_file_follow_outcome=_capture_outcome(
+            lambda: entry.is_file(follow_symlinks=True)
+        ),
+        is_file_nofollow_outcome=_capture_outcome(
+            lambda: entry.is_file(follow_symlinks=False)
+        ),
+        is_symlink_outcome=_capture_outcome(entry.is_symlink),
+    )
+
+
+class _ReplayDirEntry:
+    """Filesystem-independent replay object for scandir entries."""
+
+    def __init__(self, cached: _CachedDirEntry) -> None:
+        self._cached = cached
+        self.name = cached.name
+        self.path = cached.path
+
+    def __fspath__(self) -> str | bytes:
+        return self.path
+
+    def inode(self) -> int:
+        return self._cached.inode_outcome.unwrap()
+
+    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+        if follow_symlinks:
+            return self._cached.stat_follow_outcome.unwrap()
+        return self._cached.stat_nofollow_outcome.unwrap()
+
+    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+        if follow_symlinks:
+            return self._cached.is_dir_follow_outcome.unwrap()
+        return self._cached.is_dir_nofollow_outcome.unwrap()
+
+    def is_file(self, *, follow_symlinks: bool = True) -> bool:
+        if follow_symlinks:
+            return self._cached.is_file_follow_outcome.unwrap()
+        return self._cached.is_file_nofollow_outcome.unwrap()
+
+    def is_symlink(self) -> bool:
+        return self._cached.is_symlink_outcome.unwrap()
 
 
 class _RecordingScanDirIterator:
@@ -253,7 +342,7 @@ class _RecordingScanDirIterator:
         except StopIteration:
             self._state.exhausted = True
             raise
-        self._state.cached_names.append(entry.name)
+        self._state.cached_entries.append(_cache_direntry(entry))
         self._index += 1
         return entry
 
@@ -275,30 +364,16 @@ class _RecordingScanDirIterator:
 
 
 class _ReplayScanDirIterator:
-    """Replay iterator that yields real ``os.DirEntry`` instances."""
+    """Replay iterator that yields cached scandir entry snapshots."""
 
-    def __init__(self, func: Callable[..., Any], state: _ScanDirState) -> None:
-        self._func = func
+    def __init__(self, state: _ScanDirState) -> None:
         self._state = state
         self._iter: Iterator[Any] | None = None
 
     def _build_iter(self) -> Iterator[Any]:
-        from dejaview.patching.patching import (  # noqa: PLC0415
-            PatchingMode,
-            set_patching_mode,
-        )
-
-        with set_patching_mode(PatchingMode.OFF):
-            source = self._func(*self._state.call_args, **self._state.call_kwargs)
-        try:
-            entries = list(source)
-        finally:
-            close = getattr(source, "close", None)
-            if callable(close):
-                close()
-
-        by_name: dict[str | bytes, Any] = {entry.name: entry for entry in entries}
-        replay_entries = [by_name[name] for name in self._state.cached_names]
+        replay_entries = [
+            _ReplayDirEntry(entry) for entry in self._state.cached_entries
+        ]
         return iter(replay_entries)
 
     def __iter__(self) -> "_ReplayScanDirIterator":
@@ -338,9 +413,7 @@ class ScanDirPatcher(Patcher[Any, tuple[_ScanDirState | None, BaseException | No
         try:
             source = func(*args, **kwargs)
             state = _ScanDirState(
-                call_args=tuple(args),
-                call_kwargs=dict(kwargs),
-                cached_names=[],
+                cached_entries=[],
                 exhausted=False,
             )
         except Exception as err:  # noqa: BLE001
@@ -366,7 +439,7 @@ class ScanDirPatcher(Patcher[Any, tuple[_ScanDirState | None, BaseException | No
         if ex is not None:
             raise ex
         assert scan_state is not None
-        return _ReplayScanDirIterator(func, scan_state)
+        return _ReplayScanDirIterator(scan_state)
 
 
 # @patch(patcher=GenericPatcher)
