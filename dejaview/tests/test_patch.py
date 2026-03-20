@@ -4,7 +4,13 @@ import traceback
 
 import pytest
 
-from dejaview.patching.patching import Patches, PatchingMode, set_patching_mode
+from dejaview.patching.patching import (
+    Patches,
+    PatchingMode,
+    capture,
+    reset,
+    set_patching_mode,
+)
 from dejaview.patching.state_store import StateStore
 from dejaview.patching.util import hide_from_traceback
 from dejaview.tests.util import launch_dejaview
@@ -210,6 +216,33 @@ def test_should_patch():
         assert len(store) == 1  # patched
         assert foo.add(3) == 6
         assert len(store) == 1  # not patched
+
+
+def test_recursive_patch():
+    class Foo:
+        @staticmethod
+        def f1(x):
+            return x
+
+        @staticmethod
+        def f2():
+            return Foo.f1(123)
+
+    with Patches() as p, set_patching_mode(PatchingMode.NORMAL):
+        p.patch(Foo, "f1")
+        p.patch(Foo, "f2")
+
+        # play
+        state = capture()
+        assert Foo.f1(1) == 1
+        assert Foo.f2() == 123
+        assert Foo.f1(2) == 2
+
+        # replay should produce the same sequence
+        reset(state)
+        assert Foo.f1(1) == 1
+        assert Foo.f2() == 123
+        assert Foo.f1(2) == 2
 
 
 def test_localtime():

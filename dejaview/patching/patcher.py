@@ -62,8 +62,18 @@ class GenericPatcher(Patcher[Any, GenericPatcherState]):
 
     @staticmethod
     def play(func, *args, **kwargs):
+        # Lazy import to avoid circular dependency
+        from dejaview.patching.patching import (  # noqa: PLC0415
+            PatchingMode,
+            set_patching_mode,
+        )
+
         try:
-            ret = func(*args, **kwargs)
+            # Do not patch any functions called by func because they won't be called
+            # again during replay. If we did patch them, replay will diverge due to the
+            # mismatch in the number of calls.
+            with set_patching_mode(PatchingMode.OFF):
+                ret = func(*args, **kwargs)
             state = GenericPatcherState(return_value=ret, exc_info=None)
         except BaseException as err:
             tblib.pickling_support.install(err)
