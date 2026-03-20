@@ -1,5 +1,7 @@
+import _pyio  # type: ignore[import-not-found]
 import builtins
 import getpass
+import io
 import os
 import random
 import socket
@@ -47,26 +49,32 @@ def datetime_patch():
         sys.modules["datetime"] = old_datetime
 
 
-@contextmanager
-def io_patch():
-    import _pyio  # type: ignore[import-not-found]  # noqa: PLC0415
-    import io as old_io  # noqa: PLC0415
-
-    # Force the pure Python implementation of io over the C extension.
-    # The C _io.FileIO calls C-level syscalls directly, bypassing os module
-    # patching. _pyio.FileIO routes through os.open/os.read/os.write/etc.,
-    # which are already patched.
-
-    # Note: If this is too slow, consider using only the _pyio version of FileIO
-    # and keeping the C versions of other io classes.
-    sys.modules["_io"] = _pyio
-    old_open = builtins.open
-    builtins.open = _pyio.open
-    try:
-        yield
-    finally:
-        sys.modules["_io"] = old_io
-        builtins.open = old_open
+def patch_io(p: Patches):
+    # Replace concrete classes inside the already-imported io module with their
+    # pure Python (_pyio) equivalents. The C _io classes call C-level syscalls
+    # directly, bypassing os module patching. _pyio classes route through
+    # os.open/os.read/os.write/etc., which are already patched.
+    #
+    # We patch names inside io rather than swapping sys.modules["io"], because
+    # io defines ABC classes (IOBase, TextIOBase, etc.) that C _io objects are
+    # registered into. Swapping the module would break isinstance checks for
+    # pre-existing C io objects like sys.stdout.
+    for name in [
+        "open",
+        "FileIO",
+        "BytesIO",
+        "StringIO",
+        "BufferedReader",
+        "BufferedWriter",
+        "BufferedRWPair",
+        "BufferedRandom",
+        "TextIOWrapper",
+        "IncrementalNewlineDecoder",
+        "text_encoding",
+        "DEFAULT_BUFFER_SIZE",
+    ]:
+        p.replace(io, name, getattr(_pyio, name))
+    p.replace(builtins, "open", _pyio.open)
 
 
 def patch_sys(p: Patches):
@@ -135,7 +143,7 @@ def setup_patching():
     patch_sys(p)
     p.add(datetime_patch())
     p.add(memory_patch())
-    p.add(io_patch())
+    patch_io(p)
 
     # Note: shutil doesn't need patching because its sources of non-determinism
     # (e.g. os functions) are already patched.

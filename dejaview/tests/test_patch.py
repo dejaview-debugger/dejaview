@@ -311,6 +311,30 @@ def test_sys_stdin_readline():
     d.quit()
 
 
+def test_io_patch_isinstance():
+    """Objects created under io_patch should still pass isinstance(obj, io.XBase)."""
+    d = launch_dejaview(
+        """
+        import io
+        f = io.BytesIO(b"hello")
+        tw = io.TextIOWrapper(f)
+        checks = [
+            isinstance(f, io.BufferedIOBase),
+            isinstance(f, io.IOBase),
+            isinstance(tw, io.TextIOBase),
+            isinstance(tw, io.IOBase),
+        ]
+        print("out:", all(checks))
+        """
+    )
+
+    d.expect_prompt()
+    out = d.send_command("c")
+    x = extract_out(out).strip()
+    assert x == "True"
+    d.quit()
+
+
 @pytest.mark.xfail(reason="os module not yet patched", strict=True)
 def test_file_read(tmp_path: Path):
     path = tmp_path / "test_file"
