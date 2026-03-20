@@ -59,6 +59,11 @@ def patch_io(p: Patches):
     # io defines ABC classes (IOBase, TextIOBase, etc.) that C _io objects are
     # registered into. Swapping the module would break isinstance checks for
     # pre-existing C io objects like sys.stdout.
+    #
+    # Caveat: code that did `from io import open` or `from io import FileIO`
+    # before patching holds a direct reference to the C version, which this
+    # patch cannot reach. No stdlib module does this (checked in CPython 3.12).
+    # Third-party libraries are fine unless imported by dejaview before patching.
     for name in [
         "open",
         "FileIO",
