@@ -56,6 +56,9 @@ def io_patch():
     # The C _io.FileIO calls C-level syscalls directly, bypassing os module
     # patching. _pyio.FileIO routes through os.open/os.read/os.write/etc.,
     # which are already patched.
+
+    # Note: If this is too slow, consider using only the _pyio version of FileIO
+    # and keeping the C versions of other io classes.
     sys.modules["_io"] = _pyio
     old_open = builtins.open
     builtins.open = _pyio.open
