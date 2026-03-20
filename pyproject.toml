@@ -29,6 +29,9 @@ features = ["pyo3/extension-module"]
 python-source = "."
 module-name = "dejaview._memory_patch"
 
+[tool.dejaview]
+debug = false
+
 [tool.uv]
 cache-keys = [
     { file = "pyproject.toml" },

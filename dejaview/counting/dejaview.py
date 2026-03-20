@@ -4,10 +4,12 @@ import json
 import os
 import pdb
 import sys
+import tomllib
 import traceback
 import types
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from random import randbytes
 from typing import (
     Any,
@@ -44,8 +46,25 @@ from dejaview.snapshots.snapshots import (
 
 original_print = print  # save original print so we don't use the patched version
 
-# Debug mode flag - set to False to disable debug logging
-DEBUG = False
+
+def _load_debug_from_pyproject() -> bool:
+    """Read the DejaView debug flag from pyproject.toml.
+
+    Uses [tool.dejaview].debug, defaulting to False when unavailable.
+    """
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        with pyproject.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    tool = data.get("tool", {})
+    dejaview_tool = tool.get("dejaview", {})
+    return bool(dejaview_tool.get("debug", False))
+
+
+# Debug mode flag controlled by [tool.dejaview].debug in pyproject.toml
+DEBUG = _load_debug_from_pyproject()
 
 
 def debug_log(*args: Any) -> None:
@@ -670,6 +689,24 @@ class DejaView:
         return data
 
     def error_detection_handler(self, event: Event) -> bool:
+        if DEBUG:
+            next_count = self.error_detector._count + 1
+            checkpoint = (
+                "checkpoint"
+                if next_count % self.error_detector._period == 0
+                else "event"
+            )
+            mode = "replay" if self.snapshot_manager.is_replay_process else "root"
+            debug_log(
+                "[ERRDET]"
+                f" mode={mode}"
+                f" {checkpoint}"
+                f" next_count={next_count}"
+                f" event={event.event}"
+                f" file={event.frame.f_code.co_filename}"
+                f" line={event.frame.f_lineno}"
+                f" patch_mode={patching.get_patching_mode().name}"
+            )
         self.error_detector.update(self.summarize_event(event))
         return False
 
