@@ -47,6 +47,47 @@ def datetime_patch():
         sys.modules["datetime"] = old_datetime
 
 
+@contextmanager
+def io_patch():
+    import _pyio  # type: ignore[import-not-found]  # noqa: PLC0415
+    import io as old_io  # noqa: PLC0415
+
+    # Force the pure Python implementation of io over the C extension.
+    # The C _io.FileIO calls C-level syscalls directly, bypassing os module
+    # patching. _pyio.FileIO routes through os.open/os.read/os.write/etc.,
+    # which are already patched.
+    sys.modules["_io"] = _pyio
+    old_open = builtins.open
+    builtins.open = _pyio.open
+    try:
+        yield
+    finally:
+        sys.modules["_io"] = old_io
+        builtins.open = old_open
+
+
+def patch_sys(p: Patches):
+    # sys.getrefcount and sys.getsizeof return values that depend on CPython
+    # internal state (reference counts, allocator layout) which can vary across
+    # replays.
+    p.patch(sys, "getrefcount")
+    p.patch(sys, "getsizeof")
+
+    # sys.stdin/stdout/stderr are C _io.TextIOWrapper objects created at
+    # interpreter startup. They bypass os module patching (C-level syscalls).
+    # stdin reads are non-deterministic (user input); stdout/stderr writes
+    # would produce duplicate output on replay.
+    p.patch(sys.stdin, "read")
+    p.patch(sys.stdin, "readline")
+    p.patch(sys.stdin, "readlines")
+    # C TextIOWrapper.__next__ calls C-level readline directly, not
+    # self.readline(), so iterating stdin needs a separate patch.
+    p.patch(sys.stdin, "__next__")
+    p.decorate(sys.stdout, "write", mute_decorator)
+    p.decorate(sys.stderr, "write", mute_decorator)
+    # Note: writelines routes through self.write(), so the mute covers it.
+
+
 def setup_patching():
     p = Patches()
 
@@ -88,6 +129,12 @@ def setup_patching():
     p.patch(os, "getpid")
     p.patch(getpass, "getpass")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
+    patch_sys(p)
     p.add(datetime_patch())
     p.add(memory_patch())
+    p.add(io_patch())
+
+    # Note: shutil doesn't need patching because its sources of non-determinism
+    # (e.g. os functions) are already patched.
+
     return p
