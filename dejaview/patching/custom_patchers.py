@@ -9,18 +9,26 @@ handles.
 from __future__ import annotations
 
 import io
-import sys
 import urllib.response
 from typing import Any, Callable
 
-import tblib  # type: ignore[import-untyped]
-import tblib.pickling_support  # type: ignore[import-untyped]
-
-from dejaview.patching.patcher import ExcInfo, Patcher
+from dejaview.patching.patcher import GenericPatcher, GenericPatcherState, Patcher
 from dejaview.patching.util import hide_from_traceback
 
 # ---------------------------------------------------------------------------
 # Networking – urllib
+# ---------------------------------------------------------------------------
+#
+# We patch ``urlopen`` rather than relying on socket-level patches because
+# HTTPS uses ``ssl.SSLSocket`` which performs read/write through a C-level
+# ``_sslobj`` — this bypasses our patched ``socket.recv``/``socket.send``
+# entirely, so socket patches alone cannot replay HTTPS traffic.
+#
+# We intentionally skip:
+# - ``OpenerDirector.open``: internal dispatch called by ``urlopen``; patching
+#   ``urlopen`` at the top level already covers all calls that go through it.
+# - ``URLopener`` / ``FancyURLopener``: deprecated since Python 3.3 and
+#   removed in 3.12.
 # ---------------------------------------------------------------------------
 
 
@@ -35,49 +43,37 @@ class UrlopenPatcher(Patcher[Any, tuple]):
     """
 
     @staticmethod
+    def _make_addinfourl(
+        data: bytes, headers: Any, url: str, status: int
+    ) -> urllib.response.addinfourl:
+        return urllib.response.addinfourl(io.BytesIO(data), headers, url, status)
+
+    @staticmethod
     def play(func: Callable, *args: Any, **kwargs: Any):  # noqa: ANN205
-        exc_info: ExcInfo | None = None
-        try:
-            resp = func(*args, **kwargs)
-        except BaseException as err:
-            tblib.pickling_support.install(err)
-            _, ev, tb = sys.exc_info()
-            assert ev is not None
-            exc_info = ExcInfo(e=ev, tb=tblib.Traceback(tb))
+        # Delegate exception capture to GenericPatcher
+        run, state = GenericPatcher.play(func, *args, **kwargs)
+        if state.exc_info is not None:
+            return run, state
 
-        if exc_info is not None:
-            captured = exc_info
-
-            @hide_from_traceback
-            def run_err() -> Any:
-                tb = captured.tb.as_traceback().tb_next
-                raise captured.e.with_traceback(tb)
-
-            return run_err, captured
-
+        resp = state.return_value
         data: bytes = resp.read()
         headers = resp.info()
         url: str = resp.geturl()
         status: int = getattr(resp, "status", getattr(resp, "code", 200))
         resp.close()
-        state = (data, headers, url, status)
+        urlopen_state = (data, headers, url, status)
 
-        def run() -> Any:
-            return urllib.response.addinfourl(io.BytesIO(data), headers, url, status)
+        def run_ok() -> Any:
+            return UrlopenPatcher._make_addinfourl(data, headers, url, status)
 
-        return run, state
+        return run_ok, urlopen_state
 
     @staticmethod
     @hide_from_traceback
-    def replay(
-        func: Callable,
-        state: tuple | ExcInfo,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any:
-        if isinstance(state, ExcInfo):
-            tb = state.tb.as_traceback().tb_next
-            raise state.e.with_traceback(tb)
+    def replay(func: Callable, state: Any, *args: Any, **kwargs: Any) -> Any:
+        # GenericPatcherState means an exception was captured during play
+        if isinstance(state, GenericPatcherState):
+            return GenericPatcher.replay(func, state, *args, **kwargs)
 
         data, headers, url, status = state
-        return urllib.response.addinfourl(io.BytesIO(data), headers, url, status)
+        return UrlopenPatcher._make_addinfourl(data, headers, url, status)

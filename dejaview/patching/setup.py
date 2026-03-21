@@ -49,6 +49,9 @@ def datetime_patch():
 
 
 def patch_urllib(p: Patches):
+    # urlopen needs a custom patcher because HTTPS bypasses socket patches
+    # (SSL read/write go through C-level _sslobj, not our patched socket methods).
+    # Plain HTTP would work with socket patches alone, but HTTPS would not.
     p.patch(urllib.request, "urlopen", UrlopenPatcher)
     p.patch(urllib.request, "urlretrieve")
 
