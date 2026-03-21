@@ -2,8 +2,9 @@
   "name": "dejaview-extension",
   "displayName": "Dejaview",
   "description": "Dejaview Extension",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "TeamDejaView",
+  "repository": "https://github.com/dejaview-debugger/dejaview",
   "engines": {
     "vscode": "^1.95.0"
   },
