@@ -777,9 +777,6 @@ class DejaView:
 
                         while True:
                             event = yield
-                            if event.event != "line":
-                                continue
-
                             counts = self.counter.position
                             if counts == request.before:
                                 target = last_breakpoint
@@ -787,6 +784,9 @@ class DejaView:
                                     ResumeSnapshotReturn(LastBreakpointResult(target))
                                 )
                                 assert_never()
+
+                            if event.event != "line":
+                                continue
 
                             if self.get_pdb().break_here(event.frame):
                                 last_breakpoint = counts
