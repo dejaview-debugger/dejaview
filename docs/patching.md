@@ -52,14 +52,40 @@ Examples:
 
 Many CPython stdlib modules have both a C implementation and a pure Python fallback. The C versions often call C-level syscalls directly, **bypassing Python-level patches**. The solution is to swap the C module for its pure Python equivalent that routes through patchable Python functions.
 
+### Patching functions that return complex objects
+
+When a patched function returns a complex object (e.g. a file handle, HTTP response, subprocess), the order of preference from most transparent to least is:
+
+1. **Replace the non-deterministic calls used by the library's implementation** — if the library is written in Python, not C. This is the most transparent because the original classes and objects are preserved. (Example: `datetime` → `_pydatetime`, `io` → `_pyio`.)
+2. **Patch methods/fields on the class of the returned object** — patch only the non-deterministic parts, keeping the original class. (Example: patching `socket.socket.recv`, `socket.socket.send`, etc.)
+3. **Replace the class itself** — return a custom stand-in object on replay. This is the least transparent because it can break `isinstance` checks, `print(obj)`, `dir(obj)`, attribute access, etc. Only use this as a last resort.
+
+Always attempt options 1 and 2 before resorting to option 3.
+
+### Pitfalls
+
+- **DejaView internals calling patched functions**: If pdb or DejaView's own code calls a patched function (e.g. pdb's `linecache.checkcache` calling `os.stat`), it advances the sequence counter during replay, causing divergence. Fix by wrapping the internal call with `PatchingMode.OFF`.
+- **Constructor patching breaks object identity**: Patching a class constructor (e.g. `socket.socket`) with `log_results` returns the memoized object from play, not the one just constructed. Patch `__init__` instead to preserve object identity.
+- **AF_UNIX sockets**: DejaView uses AF_UNIX sockets for multiprocessing IPC. Patching these breaks internal communication. Use `should_patch` to skip them.
+- **Tests that are trivially deterministic**: A test that runs a deterministic program twice and asserts equal output will pass even without patching. Tests should use actually non-deterministic inputs or verify from the driver side that side effects (e.g. file writes) are suppressed on replay.
+
 ## Adding a new patch
 
 1. Identify the non-deterministic function.
 2. Trace its implementation to find the source of non-determinism.
-3. If the non-determinism flows only through already-patched functions, no patch is needed.
+3. If the non-determinism flows only through already-patched functions, no patch is needed. Document the reasoning and move on.
+    - Not patching is better than patching if both work.
 4. If it calls C-level syscalls directly, check if a pure Python fallback exists that routes through patchable Python functions.
-5. Choose the mechanism: `p.patch()` for memoization, `p.decorate()` for custom behavior (e.g. muting), `p.replace()` for attribute swaps.
-6. Add an end-to-end test in `test_patch.py`. Typically, running the program twice and asserting equal output is sufficient.
+5. Choose the least invasive and least brittle approach.
+    - Prefer patching at the source of non-determinism rather than at every call site.
+    - Prefer preserving original classes and objects over replacing them with stand-ins (see "Patching functions that return complex objects" above).
+6. Choose the mechanism:
+    - `p.patch()` for memoization
+    - `p.decorate()` for custom behavior (e.g. muting)
+    - `p.replace()` for attribute swaps.
+6. Add an end-to-end test in `test_patch.py`.
+    - Typically, running the program twice and asserting equal output is sufficient.
+    - Simple functions that have simple return type, such as `time.time()`, don't need to be tested at all.
 
 ## Examples
 
