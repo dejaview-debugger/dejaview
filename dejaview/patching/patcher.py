@@ -316,7 +316,6 @@ class ScanDirPatcher(Patcher[Any, tuple[_ScanDirState | None, BaseException | No
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        print(f"replay for scandir is called with state: {state}")
         scan_state, ex = state
         if ex is not None:
             raise ex
