@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Protocol
+from typing import Any, Callable, Iterator, Protocol, TypeAlias
 
 import tblib  # type: ignore[import-untyped]
 import tblib.pickling_support  # type: ignore[import-untyped]
@@ -170,31 +170,46 @@ class _ReplayDirEntry:
         return self.path
 
     def inode(self) -> int:
-        return self._cached.inode_outcome.unwrap()
+        return self._cached.inode_outcome.unwrap()  # type: ignore[no-any-return]
 
     def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
         if follow_symlinks:
-            return self._cached.stat_follow_outcome.unwrap()
-        return self._cached.stat_nofollow_outcome.unwrap()
+            return self._cached.stat_follow_outcome.unwrap()  # type: ignore[no-any-return]
+        return self._cached.stat_nofollow_outcome.unwrap()  # type: ignore[no-any-return]
 
     def is_dir(self, *, follow_symlinks: bool = True) -> bool:
         if follow_symlinks:
-            return self._cached.is_dir_follow_outcome.unwrap()
-        return self._cached.is_dir_nofollow_outcome.unwrap()
+            return self._cached.is_dir_follow_outcome.unwrap()  # type: ignore[no-any-return]
+        return self._cached.is_dir_nofollow_outcome.unwrap()  # type: ignore[no-any-return]
 
     def is_file(self, *, follow_symlinks: bool = True) -> bool:
         if follow_symlinks:
-            return self._cached.is_file_follow_outcome.unwrap()
-        return self._cached.is_file_nofollow_outcome.unwrap()
+            return self._cached.is_file_follow_outcome.unwrap()  # type: ignore[no-any-return]
+        return self._cached.is_file_nofollow_outcome.unwrap()  # type: ignore[no-any-return]
 
     def is_symlink(self) -> bool:
-        return self._cached.is_symlink_outcome.unwrap()
+        return self._cached.is_symlink_outcome.unwrap()  # type: ignore[no-any-return]
+
+
+_ScanDirEntry: TypeAlias = os.DirEntry[str] | os.DirEntry[bytes]
+
+
+class _ScanDirSource(Protocol):
+    def __iter__(self) -> Iterator[_ScanDirEntry]: ...
+
+    def __next__(self) -> _ScanDirEntry: ...
+
+    def __enter__(self) -> Any: ...
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any: ...
+
+    def close(self) -> None: ...
 
 
 class _RecordingScanDirIterator:
     """Lazily records consumed scandir entry names during play."""
 
-    def __init__(self, source: Any, state: _ScanDirState) -> None:
+    def __init__(self, source: _ScanDirSource, state: _ScanDirState) -> None:
         self._source = source
         self._state = state
         self._index = 0
@@ -202,7 +217,7 @@ class _RecordingScanDirIterator:
     def __iter__(self) -> "_RecordingScanDirIterator":
         return self
 
-    def __next__(self) -> Any:
+    def __next__(self) -> _ScanDirEntry:
         try:
             entry = next(self._source)
         except StopIteration:
@@ -234,9 +249,9 @@ class _ReplayScanDirIterator:
 
     def __init__(self, state: _ScanDirState) -> None:
         self._state = state
-        self._iter: Iterator[Any] | None = None
+        self._iter: Iterator[_ReplayDirEntry] | None = None
 
-    def _build_iter(self) -> Iterator[Any]:
+    def _build_iter(self) -> Iterator[_ReplayDirEntry]:
         replay_entries = [
             _ReplayDirEntry(entry) for entry in self._state.cached_entries
         ]
@@ -245,7 +260,7 @@ class _ReplayScanDirIterator:
     def __iter__(self) -> "_ReplayScanDirIterator":
         return self
 
-    def __next__(self) -> Any:
+    def __next__(self) -> _ReplayDirEntry:
         if self._iter is None:
             self._iter = self._build_iter()
         return next(self._iter)

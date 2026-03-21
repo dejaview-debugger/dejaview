@@ -3,6 +3,7 @@ import operator
 import os as _real_os
 import tempfile
 from pathlib import Path
+from typing import cast as type_cast
 
 from dejaview.tests.util import (
     DebugCommand,
@@ -1367,7 +1368,7 @@ def test_os_read_write():
                 except (SyntaxError, ValueError):
                     continue
                 if isinstance(value, expected_type):
-                    return value
+                    return type_cast(bytes | int, value)
             raise AssertionError(
                 f"No printed value of type {expected_type.__name__} found in output:\n"
                 f"{step_output}"
