@@ -7,10 +7,12 @@ import random
 import socket
 import sys
 import time
+import urllib.request
 from contextlib import contextmanager
 from functools import wraps
 
 from dejaview import _memory_patch
+from dejaview.patching.custom_patchers import UrlopenPatcher
 from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
 
 
@@ -82,6 +84,14 @@ def patch_io(p: Patches):
     p.replace(builtins, "open", _pyio.open)
 
 
+def patch_urllib(p: Patches):
+    # urlopen needs a custom patcher because HTTPS bypasses socket patches
+    # (SSL read/write go through C-level _sslobj, not our patched socket methods).
+    # Plain HTTP would work with socket patches alone, but HTTPS would not.
+    p.patch(urllib.request, "urlopen", UrlopenPatcher)
+    p.patch(urllib.request, "urlretrieve")
+
+
 def patch_sys(p: Patches):
     # sys.getrefcount and sys.getsizeof return values that depend on CPython
     # internal state (reference counts, allocator layout) which can vary across
@@ -145,9 +155,11 @@ def setup_patching():
     p.patch(os, "getpid")
     p.patch(getpass, "getpass")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
-    patch_sys(p)
     p.add(datetime_patch())
     p.add(memory_patch())
+
+    patch_urllib(p)
+    patch_sys(p)
     patch_io(p)
 
     # Note: shutil doesn't need patching because its sources of non-determinism
