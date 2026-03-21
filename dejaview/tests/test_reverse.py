@@ -835,3 +835,24 @@ def test_code_exec_local_var():
     d.sendline("!print(1 % 0)")  # Should not crash debugger
     assert "*** ZeroDivisionError: integer modulo by zero" in d.expect_prompt()
     d.quit()
+
+
+def test_rcontinue_in_return():
+    d = launch_dejaview(
+        """
+        def foo():
+            2
+            3
+            return 4
+        foo()
+        6
+        """
+    )
+    d.assert_line_number(1)
+    d.run_to(6)
+    out = d.send_command("rs")
+    assert "--Return--" in out
+    d.send_command("b 3")
+    d.sendline("rc")
+    d.assert_line_number(3)
+    d.quit()
