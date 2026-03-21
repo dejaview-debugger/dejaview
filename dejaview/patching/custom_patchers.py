@@ -10,13 +10,9 @@ These patchers handle the special requirements of socket patching:
 from __future__ import annotations
 
 import socket
-import sys
 from typing import Any, Callable
 
-import tblib  # type: ignore[import-untyped]
-import tblib.pickling_support  # type: ignore[import-untyped]
-
-from dejaview.patching.patcher import ExcInfo, Patcher
+from dejaview.patching.patcher import GenericPatcher, GenericPatcherState, Patcher
 from dejaview.patching.util import hide_from_traceback
 
 
@@ -38,13 +34,14 @@ def _is_af_unix_from_init_args(*args: Any, **kwargs: Any) -> bool:
     return family == socket.AF_UNIX
 
 
-class SocketInitPatcher(Patcher[Any, tuple]):
+class SocketInitPatcher(Patcher[Any, Any]):
     """Patcher for ``socket.socket.__init__``.
 
-    On play, the real ``__init__`` runs and slot fields are stored.
-    On replay, the real ``__init__`` is called (to create a valid socket
-    object) and then the stored slot field values are restored so that
-    the socket has deterministic identity.
+    On play, the real ``__init__`` runs and any exception is captured.
+    On replay, the real ``__init__`` is called again (to create a valid
+    C-level socket) — family/type/proto are determined by the arguments
+    which are the same during replay. All subsequent socket methods are
+    memoized by ``SocketMethodPatcher``.
 
     AF_UNIX sockets are never patched — they pass through directly.
     """
@@ -55,58 +52,27 @@ class SocketInitPatcher(Patcher[Any, tuple]):
             func(*args, **kwargs)
             return (lambda: None), None
 
-        exc_info: ExcInfo | None = None
-        try:
-            func(*args, **kwargs)
-        except BaseException as err:
-            tblib.pickling_support.install(err)
-            _, ev, tb = sys.exc_info()
-            assert ev is not None
-            exc_info = ExcInfo(e=ev, tb=tblib.Traceback(tb))
-
-        if exc_info is not None:
-            captured = exc_info
-
-            @hide_from_traceback
-            def run_err() -> None:
-                tb = captured.tb.as_traceback().tb_next
-                raise captured.e.with_traceback(tb)
-
-            return run_err, captured
-
-        # args[0] is self
-        self = args[0]
-        state = (self.family, self.type, self.proto)
-        return (lambda: None), state
+        return GenericPatcher.play(func, *args, **kwargs)
 
     @staticmethod
     @hide_from_traceback
-    def replay(
-        func: Callable, state: tuple | ExcInfo | None, *args: Any, **kwargs: Any
-    ) -> Any:
+    def replay(func: Callable, state: Any, *args: Any, **kwargs: Any) -> Any:
         if state is None:
             # AF_UNIX — pass through
             return func(*args, **kwargs)
 
-        if isinstance(state, ExcInfo):
-            tb = state.tb.as_traceback().tb_next
-            raise state.e.with_traceback(tb)
+        # Re-raise captured exception if __init__ failed during play
+        if isinstance(state, GenericPatcherState) and state.exc_info is not None:
+            return GenericPatcher.replay(func, state, *args, **kwargs)
 
-        # Create a real socket so internal C-level state is valid
-        func(*args, **kwargs)
-        self = args[0]
-        family, sock_type, proto = state
-        # Overwrite the slot fields to match the original
-        self.family = family
-        self.type = sock_type
-        self.proto = proto
-        return None
+        # Create a real socket — family/type/proto come from the args
+        return func(*args, **kwargs)
 
 
-class SocketMethodPatcher(Patcher[Any, tuple[Any | None, BaseException | None]]):
+class SocketMethodPatcher(Patcher[Any, Any]):
     """Patcher for socket instance methods (bind, recv, send, etc.).
 
-    Skips patching for AF_UNIX sockets. Otherwise behaves like
+    Skips patching for AF_UNIX sockets. Otherwise delegates to
     GenericPatcher.
     """
 
@@ -117,38 +83,13 @@ class SocketMethodPatcher(Patcher[Any, tuple[Any | None, BaseException | None]])
             passthrough = func(*args, **kwargs)
             return (lambda: passthrough), None
 
-        exc_info: ExcInfo | None = None
-        ret: Any | None = None
-        try:
-            ret = func(*args, **kwargs)
-        except BaseException as err:
-            tblib.pickling_support.install(err)
-            _, ev, tb = sys.exc_info()
-            assert ev is not None
-            exc_info = ExcInfo(e=ev, tb=tblib.Traceback(tb))
-
-        if exc_info is not None:
-            captured = exc_info
-
-            @hide_from_traceback
-            def run_err() -> Any:
-                tb = captured.tb.as_traceback().tb_next
-                raise captured.e.with_traceback(tb)
-
-            return run_err, (None, exc_info)
-
-        state = (ret, None)
-        return (lambda: ret), state
+        return GenericPatcher.play(func, *args, **kwargs)
 
     @staticmethod
     @hide_from_traceback
-    def replay(func: Callable, state: tuple | None, *args: Any, **kwargs: Any) -> Any:
+    def replay(func: Callable, state: Any, *args: Any, **kwargs: Any) -> Any:
         if state is None:
             # AF_UNIX — pass through
             return func(*args, **kwargs)
 
-        ret, exc_info = state
-        if exc_info is not None:
-            tb = exc_info.tb.as_traceback().tb_next
-            raise exc_info.e.with_traceback(tb)
-        return ret
+        return GenericPatcher.replay(func, state, *args, **kwargs)
