@@ -10,7 +10,11 @@ from contextlib import contextmanager
 from functools import wraps
 
 from dejaview import _memory_patch
-from dejaview.patching.custom_patchers import SocketInitPatcher, SocketMethodPatcher, UrlopenPatcher
+from dejaview.patching.custom_patchers import (
+    SocketInitPatcher,
+    SocketMethodPatcher,
+    UrlopenPatcher,
+)
 from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
 
 
@@ -79,7 +83,8 @@ def patch_socket(p: Patches):
     p.patch(socket, "gethostname")
     p.patch(socket, "gethostbyname")
     p.patch(socket, "create_connection")
-    
+
+
 def patch_urllib(p: Patches):
     # urlopen needs a custom patcher because HTTPS bypasses socket patches
     # (SSL read/write go through C-level _sslobj, not our patched socket methods).

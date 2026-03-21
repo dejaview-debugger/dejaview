@@ -1,13 +1,13 @@
 """Custom patchers for functions that return complex stateful objects.
 
 These patchers extend the base :class:`Patcher` protocol for cases where
-simple memoization (:class:`GenericPatcher`) is insufficient. 
+simple memoization (:class:`GenericPatcher`) is insufficient.
 """
 
 from __future__ import annotations
 
-import socket
 import io
+import socket
 import urllib.response
 from typing import Any, Callable
 
@@ -52,7 +52,22 @@ class SocketInitPatcher(Patcher[Any, Any]):
             return (lambda: None), None
 
         return GenericPatcher.play(func, *args, **kwargs)
-    
+
+    @staticmethod
+    @hide_from_traceback
+    def replay(func: Callable, state: Any, *args: Any, **kwargs: Any) -> Any:
+        if state is None:
+            # AF_UNIX — pass through
+            return func(*args, **kwargs)
+
+        # Re-raise captured exception if __init__ failed during play
+        if isinstance(state, GenericPatcherState) and state.exc_info is not None:
+            return GenericPatcher.replay(func, state, *args, **kwargs)
+
+        # Create a real socket — family/type/proto come from the args
+        return func(*args, **kwargs)
+
+
 class SocketMethodPatcher(Patcher[Any, Any]):
     """Patcher for socket instance methods (bind, recv, send, etc.).
 
@@ -77,12 +92,7 @@ class SocketMethodPatcher(Patcher[Any, Any]):
             return func(*args, **kwargs)
 
         return GenericPatcher.replay(func, state, *args, **kwargs)
-        # GenericPatcherState means an exception was captured during play
-        if isinstance(state, GenericPatcherState):
-            return GenericPatcher.replay(func, state, *args, **kwargs)
 
-        data, headers, url, status = state
-        return UrlopenPatcher._make_addinfourl(data, headers, url, status)
 
 # ---------------------------------------------------------------------------
 # Networking – urllib
@@ -140,14 +150,9 @@ class UrlopenPatcher(Patcher[Any, tuple]):
     @staticmethod
     @hide_from_traceback
     def replay(func: Callable, state: Any, *args: Any, **kwargs: Any) -> Any:
-        if state is None:
-            # AF_UNIX — pass through
-            return func(*args, **kwargs)
-
-        # Re-raise captured exception if __init__ failed during play
-        if isinstance(state, GenericPatcherState) and state.exc_info is not None:
+        # GenericPatcherState means an exception was captured during play
+        if isinstance(state, GenericPatcherState):
             return GenericPatcher.replay(func, state, *args, **kwargs)
 
-        # Create a real socket — family/type/proto come from the args
-        return func(*args, **kwargs)
-
+        data, headers, url, status = state
+        return UrlopenPatcher._make_addinfourl(data, headers, url, status)
