@@ -9,9 +9,11 @@ handles.
 from __future__ import annotations
 
 import io
+import urllib.response
 from typing import Any, Callable
 
-from dejaview.patching.patcher import Patcher
+from dejaview.patching.patcher import GenericPatcher, GenericPatcherState, Patcher
+from dejaview.patching.util import hide_from_traceback
 
 # ---------------------------------------------------------------------------
 # Sub-processes
@@ -95,11 +97,7 @@ class PopenPatcher(Patcher[Any, tuple]):
     def replay(func: Callable, state: tuple, *args: Any, **kwargs: Any) -> Any:
         stdout, stderr, returncode, pid, proc_args = state
         return _ReplayPopen(stdout, stderr, returncode, pid, proc_args)
-import urllib.response
-from typing import Any, Callable
 
-from dejaview.patching.patcher import GenericPatcher, GenericPatcherState, Patcher
-from dejaview.patching.util import hide_from_traceback
 
 # ---------------------------------------------------------------------------
 # Networking – urllib

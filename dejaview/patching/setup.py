@@ -58,7 +58,8 @@ def patch_subprocess(p: Patches):
     p.patch(subprocess, "call")
     p.patch(subprocess, "getoutput")
     p.patch(subprocess, "getstatusoutput")
-    
+
+
 def patch_urllib(p: Patches):
     # urlopen needs a custom patcher because HTTPS bypasses socket patches
     # (SSL read/write go through C-level _sslobj, not our patched socket methods).
