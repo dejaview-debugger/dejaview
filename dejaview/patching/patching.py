@@ -108,7 +108,8 @@ def log_results[F: Callable[..., Any]](
     @hide_from_traceback
     def wrapper(*args: Any, **kwargs: Any):
         mode = get_patching_mode()
-        caller = inspect.currentframe().f_back
+        frame = inspect.currentframe()
+        caller = frame.f_back if frame is not None else None
         while caller is not None and caller.f_code.co_filename.startswith(
             _PATCHING_DIR
         ):
