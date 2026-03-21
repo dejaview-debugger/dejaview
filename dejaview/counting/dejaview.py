@@ -730,9 +730,7 @@ class DejaView:
         """
         assert self.snapshot_manager.is_replay_process
         debug_log(f"got arg {arg=}, {os.getpid()=}")
-        # we're a replay process
-        if self.is_testing:
-            backdoor._is_replay = True  # Let tests know we're a replay process
+        backdoor._is_replay = True  # Let tests know we're a replay process
         self.replay_head_reached = False
         self.error_detector.switch_to_verify(arg.error_detector_reference)
         request = arg.request
@@ -777,9 +775,6 @@ class DejaView:
 
                         while True:
                             event = yield
-                            if event.event != "line":
-                                continue
-
                             counts = self.counter.position
                             if counts == request.before:
                                 target = last_breakpoint
@@ -787,6 +782,9 @@ class DejaView:
                                     ResumeSnapshotReturn(LastBreakpointResult(target))
                                 )
                                 assert_never()
+
+                            if event.event != "line":
+                                continue
 
                             if self.get_pdb().break_here(event.frame):
                                 last_breakpoint = counts

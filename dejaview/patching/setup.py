@@ -1,15 +1,17 @@
 import builtins
+import getpass
 import os
 import random
 import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from contextlib import contextmanager
 from functools import wraps
 
 from dejaview import _memory_patch
-from dejaview.patching.custom_patchers import PopenPatcher
+from dejaview.patching.custom_patchers import PopenPatcher, UrlopenPatcher
 from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
 
 
@@ -56,6 +58,13 @@ def patch_subprocess(p: Patches):
     p.patch(subprocess, "call")
     p.patch(subprocess, "getoutput")
     p.patch(subprocess, "getstatusoutput")
+    
+def patch_urllib(p: Patches):
+    # urlopen needs a custom patcher because HTTPS bypasses socket patches
+    # (SSL read/write go through C-level _sslobj, not our patched socket methods).
+    # Plain HTTP would work with socket patches alone, but HTTPS would not.
+    p.patch(urllib.request, "urlopen", UrlopenPatcher)
+    p.patch(urllib.request, "urlretrieve")
 
 
 def setup_patching():
@@ -97,9 +106,11 @@ def setup_patching():
 
     p.patch(builtins, "input")
     p.patch(os, "getpid")
+    p.patch(getpass, "getpass")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
     p.add(datetime_patch())
     p.add(memory_patch())
     patch_subprocess(p)
+    patch_urllib(p)
 
     return p
