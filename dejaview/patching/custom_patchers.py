@@ -29,8 +29,8 @@ class _ReplayPopen:
 
     def __init__(
         self,
-        stdout: bytes | None,
-        stderr: bytes | None,
+        stdout: bytes | str | None,
+        stderr: bytes | str | None,
         returncode: int,
         pid: int = -1,
         args: Any = None,
@@ -41,14 +41,24 @@ class _ReplayPopen:
         self.pid = pid
         self.args = args or []
         self.stdin = None
-        self.stdout = io.BytesIO(stdout) if stdout is not None else None
-        self.stderr = io.BytesIO(stderr) if stderr is not None else None
+        self.stdout = self._wrap_stream(stdout)
+        self.stderr = self._wrap_stream(stderr)
+
+    @staticmethod
+    def _wrap_stream(
+        data: bytes | str | None,
+    ) -> io.BytesIO | io.StringIO | None:
+        if isinstance(data, str):
+            return io.StringIO(data)
+        if data is not None:
+            return io.BytesIO(data)
+        return None
 
     def communicate(
         self,
         input: bytes | None = None,  # noqa: A002
         timeout: float | None = None,
-    ) -> tuple[bytes | None, bytes | None]:
+    ) -> tuple[bytes | str | None, bytes | str | None]:
         return self._stdout_data, self._stderr_data
 
     def wait(self, timeout: float | None = None) -> int:

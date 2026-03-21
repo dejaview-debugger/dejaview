@@ -65,6 +65,39 @@ class TestSubprocessPatching:
         assert replay_out == out
         assert b"original" in replay_out
 
+    def test_popen_text_mode(self):
+        """Popen with text=True returns str, not bytes."""
+        with Patches() as p, set_patching_mode(PatchingMode.NORMAL):
+            p.patch(subprocess, "Popen", PopenPatcher)
+
+            snap = capture()
+            proc = subprocess.Popen(
+                ["echo", "hello"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            out, _ = proc.communicate()
+
+            reset(snap)
+            try:
+                backdoor._is_replay = True
+                replay_proc = subprocess.Popen(
+                    ["echo", "WRONG"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                replay_out, _ = replay_proc.communicate()
+            finally:
+                backdoor._is_replay = False
+
+        assert isinstance(out, str)
+        assert replay_out == out
+        assert "hello" in replay_out
+        assert replay_proc.stdout is not None
+        assert isinstance(replay_proc.stdout.read(), str)
+
     def test_run_memoized_e2e(self):
         d = launch_dejaview(
             """
