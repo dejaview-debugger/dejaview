@@ -64,9 +64,8 @@ Always attempt options 1 and 2 before resorting to option 3.
 
 ### Pitfalls
 
-- **DejaView internals calling patched functions**: If pdb or DejaView's own code calls a patched function (e.g. pdb's `linecache.checkcache` calling `os.stat`), it advances the sequence counter during replay, causing divergence. Fix by wrapping the internal call with `PatchingMode.OFF`.
-- **Constructor patching breaks object identity**: Patching a class constructor (e.g. `socket.socket`) with `log_results` returns the memoized object from play, not the one just constructed. Patch `__init__` instead to preserve object identity.
-- **AF_UNIX sockets**: DejaView uses AF_UNIX sockets for multiprocessing IPC. Patching these breaks internal communication. Use `should_patch` to skip them.
+- **Class patching breaks object identity**: Patching a class (e.g. `socket.socket`) by returning a custom object breaks class identity, causing `print`, `isinstance`, etc. to behave unexpectedly. It's generally better to patch individual methods (e.g. `socket.socket.recv`) rather than the whole class, but patching the class is acceptable when there's no other alternative (e.g. classes implemented as C extensions)
+- **Internal usage**: DejaView uses many stdlib functions internally. Make sure to wrap calls in `set_patching_mode(PatchingMode.OFF)` to avoid recording DejaView's own non-deterministic calls.
 - **Tests that are trivially deterministic**: A test that runs a deterministic program twice and asserts equal output will pass even without patching. Tests should use actually non-deterministic inputs or verify from the driver side that side effects (e.g. file writes) are suppressed on replay.
 
 ## Adding a new patch
