@@ -7,6 +7,7 @@ from functools import wraps
 from typing import Any, Callable, ContextManager, Sequence, cast
 from unittest.mock import patch
 
+from dejaview.patching.backdoor import is_replay
 from dejaview.patching.patcher import GenericPatcher, Patcher
 from dejaview.patching.state_store import StateStore
 from dejaview.patching.util import hide_from_traceback
@@ -81,15 +82,21 @@ def log_results[F: Callable[..., Any]](
         #     "contains:",
         #     StateStore.get(func).contains(current_seq),
         # )
-        if not StateStore.get(func).contains(current_seq):
+        if is_replay() != StateStore.get(func).contains(current_seq):
+            raise RuntimeError(
+                f"Replay divergence in patched function {func.__qualname__}\n"
+                f"is_replay={is_replay()}\n"
+                f"current_seq={current_seq}\n"
+                f"stored={len(StateStore.get(func).store)}"
+            )
+        if is_replay():
+            state = StateStore.get(func).get_state(current_seq)
+            return patcher.replay(func, state, *args, **kwargs)
+        else:
             # play
             run, state = patcher.play(func, *args, **kwargs)
             StateStore.get(func).set_state(current_seq, state)
             return run()
-        else:
-            # replay
-            state = StateStore.get(func).get_state(current_seq)
-            return patcher.replay(func, state, *args, **kwargs)
 
     return cast(F, wrapper)
 

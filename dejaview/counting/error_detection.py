@@ -30,12 +30,14 @@ class StreamErrorDetector:
     Note:
         A small digest size allows for more frequent checks at the same overhead.
 
-        For example, a 1 byte digest every 100 events has the same memory overhead and
+        For example, a 1 byte digest every 2 events has the same memory overhead and
         detection probability as a 16 byte digest every 1600 events, but with much
         smaller expected detection latency when the program diverges.
     """
 
-    DEFAULT_PERIOD = 100
+    # For now set it to a small value to catch divergence as soon as possible.
+    # As the patching coverage expands, we can increase this to reduce the overhead.
+    DEFAULT_PERIOD = 2
     DEFAULT_DIGEST_SIZE = 1
     FULL_DIGEST_SIZE = 32
 
