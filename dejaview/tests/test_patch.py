@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from dejaview.patching import backdoor
 from dejaview.patching.patching import (
     Patches,
     PatchingMode,
@@ -15,7 +14,7 @@ from dejaview.patching.patching import (
 )
 from dejaview.patching.state_store import StateStore
 from dejaview.patching.util import hide_from_traceback
-from dejaview.tests.util import launch_dejaview
+from dejaview.tests.util import launch_dejaview, pretend_replay
 
 
 def extract_out(stdout: str) -> str:
@@ -242,13 +241,10 @@ def test_recursive_patch():
 
         # replay should produce the same sequence
         reset(state)
-        try:
-            backdoor._is_replay = True
+        with pretend_replay():
             assert Foo.f1(1) == 1
             assert Foo.f2() == 123
             assert Foo.f1(2) == 2
-        finally:
-            backdoor._is_replay = False
 
 
 def test_localtime():
