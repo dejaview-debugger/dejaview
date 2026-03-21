@@ -1,40 +1,102 @@
-# DejaView VS Code Extension README
+# DejaView VS Code Extension
 
-This is the README for the DejaView VS Code extension.
+The DejaView VS Code extension adds a VS Code debug adapter for the DejaView Python debugger.
 
+It contributes a debugger type named `dejaview-python-pdb` (shown as **DejaView Python (pdb)**) and launches your target script through DejaView so you can use standard debugging controls, including reverse-stepping support exposed by the adapter.
 
-## Running the extension for development
+For core debugger behavior, reverse commands, and CLI details, see the main project: [https://github.com/dejaview-debugger/dejaview](https://github.com/dejaview-debugger/dejaview).
 
-* Press `F5` to open a new window with your extension loaded.
-* Run your command from the command palette by pressing (`Ctrl+Shift+P` or `Cmd+Shift+P` on Mac) and typing `Hello World`.
-* Set breakpoints in your code inside `src/extension.ts` to debug your extension.
-* Find output from your extension in the debug console.
+## Prerequisites
 
----
+Before using the extension, make sure you have:
 
-## Running Extension Tests
+- VS Code 1.95.0 or newer
+- Python 3.12
+- DejaView installed in the environment you want to debug
 
-To run the automated tests for the DejaView VS Code extension:
+Install DejaView from source:
 
-1. Open a terminal and navigate to the `dejaview-extension` directory:
-	```
-	cd /path/to/se390/dejaview-extension
-	```
-2. Install dependencies:
-	```
-	npm install
-	```
-3. Run the test suite:
-	```
-	npm test
-	```
+```bash
+pip install "dejaview @ git+https://github.com/dejaview-debugger/dejaview"
+```
 
-This will compile the extension and run all tests in `src/test/extension.test.ts`.
+Or with uv:
 
----
+```bash
+uv pip install "dejaview @ git+https://github.com/dejaview-debugger/dejaview"
+```
 
-## Following extension guidelines
+## Using the Extension
 
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
+1. Open your Python workspace in VS Code.
+2. Create or edit `.vscode/launch.json`.
+3. Add a debug configuration with `type: "dejaview-python-pdb"`.
+4. Start debugging from the Run and Debug view.
 
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
+Example `launch.json` configuration:
+
+```json
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "DejaView: Debug current file",
+			"type": "dejaview-python-pdb",
+			"request": "launch",
+			"program": "${file}",
+			"pythonPath": "python3",
+			"cwd": "${workspaceFolder}",
+			"port": 5678
+		}
+	]
+}
+```
+
+### Launch Configuration Reference
+
+- `program` (required): Path to the Python script to debug.
+- `pythonPath` (optional): Python executable to run. Default is `python3`.
+- `cwd` (optional): Working directory for the debugged process.
+- `port` (optional): Local TCP port for adapter/debugger communication. Default is `5678`.
+
+## Development
+
+From this folder, install dependencies and compile:
+
+```bash
+npm install
+npm run compile
+```
+
+To watch TypeScript changes:
+
+```bash
+npm run watch
+```
+
+To run the extension in an Extension Development Host:
+
+1. Open this folder in VS Code.
+2. Press `F5`.
+3. In the new VS Code window, run a `python-pdb` launch configuration.
+
+## Testing
+
+Run the extension test suite:
+
+```bash
+npm test
+```
+
+This compiles the extension, runs linting, and executes tests in `src/test/extension.test.ts`.
+
+## Notes and Limitations
+
+- This extension is a debug adapter wrapper; debugger capabilities come from the DejaView Python package.
+- If reverse execution does not behave as expected, check the DejaView limitations in the main README.
+- Choose a unique `port` if you run multiple debug sessions concurrently.
+
+## References
+
+- Main debugger docs: [https://github.com/dejaview-debugger/dejaview](https://github.com/dejaview-debugger/dejaview)
+- VS Code extension guidelines: [https://code.visualstudio.com/api/references/extension-guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
