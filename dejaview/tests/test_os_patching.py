@@ -1334,3 +1334,84 @@ def test_os_write():
             f"forward write mismatch: {value_first_play!r} vs {value_second_play!r}"
         )
         d.quit()
+
+
+def test_os_read_write():
+    fd, temp_path = tempfile.mkstemp(prefix="dejaview-os-read-write-", suffix=".txt")
+    try:
+        _real_os.write(fd, b"hello")
+        _real_os.close(fd)
+
+        d = launch_dejaview(
+            f"""
+            import os
+            fd = os.open({repr(temp_path)}, os.O_RDWR)
+            print(os.read(fd, 5))
+            os.lseek(fd, 0, os.SEEK_SET)
+            print(os.write(fd, b'HELLO'))
+            os.close(fd)
+            fd2 = os.open({repr(temp_path)}, os.O_RDONLY)
+            print(os.read(fd2, 5))
+            os.close(fd2)
+            print()
+            """
+        )
+
+        def parse_printed_value(step_output: str, expected_type: type) -> bytes | int:
+            for raw_line in step_output.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    value = ast.literal_eval(line)
+                except (SyntaxError, ValueError):
+                    continue
+                if isinstance(value, expected_type):
+                    return value
+            raise AssertionError(
+                f"No printed value of type {expected_type.__name__} found in output:\n"
+                f"{step_output}"
+            )
+
+        def run_forward_to_end() -> list[bytes | int]:
+            values: list[bytes | int] = []
+            expected_progression = [2, 3, 4, 5, 6, 7, 8, 9, 10, 10]
+            for expected_line in expected_progression:
+                d.sendline("n")
+                step_out = d.assert_line_number(expected_line)
+                for expected_type in (bytes, int):
+                    try:
+                        value = parse_printed_value(step_out, expected_type)
+                    except AssertionError:
+                        continue
+                    values.append(value)
+                    break
+            return values
+
+        def rewind_to_line_1() -> None:
+            rewind_progression = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+            for expected_line in rewind_progression:
+                d.sendline("back")
+                d.assert_line_number(expected_line)
+
+        d.assert_line_number(1)
+        forward_values = run_forward_to_end()
+        rewind_to_line_1()
+        replay_values = run_forward_to_end()
+
+        expected_values: list[bytes | int] = [b"hello", 5, b"HELLO"]
+        assert forward_values == expected_values, (
+            f"forward values mismatch: expected {expected_values!r},"
+            f"got {forward_values!r}"
+        )
+        assert replay_values == expected_values, (
+            f"replay values mismatch: expected {expected_values!r},"
+            f" got {replay_values!r}"
+        )
+        assert forward_values == replay_values, (
+            f"forward/replay mismatch: {forward_values!r} vs {replay_values!r}"
+        )
+
+        d.quit()
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
