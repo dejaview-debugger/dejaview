@@ -6,7 +6,6 @@ from threading import Thread
 
 import pytest
 
-from dejaview.patching import backdoor
 from dejaview.patching.custom_patchers import UrlopenPatcher
 from dejaview.patching.patching import (
     Patches,

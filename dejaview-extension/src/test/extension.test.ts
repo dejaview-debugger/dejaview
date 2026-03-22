@@ -45,13 +45,13 @@ if __name__ == "__main__":
     });
 
     test("Extension should be present", () => {
-        const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
+        const extension = vscode.extensions.getExtension("TeamDejaView.dejaview-extension");
         assert.ok(extension, "Extension should be installed");
     });
 
     test("Extension should activate", async function () {
         this.timeout(10000);
-        const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
+        const extension = vscode.extensions.getExtension("TeamDejaView.dejaview-extension");
         assert.ok(extension, "Extension should be present");
 
         await extension.activate();
@@ -60,7 +60,7 @@ if __name__ == "__main__":
 
     test("Debug adapter should be registered for dejaview-python-pdb type", async function () {
         this.timeout(10000);
-        const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
+        const extension = vscode.extensions.getExtension("TeamDejaView.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 
@@ -77,7 +77,7 @@ if __name__ == "__main__":
 
     test("Debug configuration should have correct properties", async function () {
         this.timeout(10000);
-        const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
+        const extension = vscode.extensions.getExtension("TeamDejaView.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 
@@ -98,7 +98,7 @@ if __name__ == "__main__":
     test("Debug session can be started with valid configuration", async function () {
         this.timeout(30000);
 
-        const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
+        const extension = vscode.extensions.getExtension("TeamDejaView.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 
@@ -157,7 +157,7 @@ if __name__ == "__main__":
     test("Breakpoints can be set in Python files", async function () {
         this.timeout(10000);
 
-        const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
+        const extension = vscode.extensions.getExtension("TeamDejaView.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     test("Extension supports step back functionality", async function () {
         this.timeout(10000);
 
-        const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
+        const extension = vscode.extensions.getExtension("TeamDejaView.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 
@@ -216,7 +216,7 @@ if __name__ == "__main__":
 `;
         fs.writeFileSync(secondPythonFile, pythonCode2);
 
-        const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
+        const extension = vscode.extensions.getExtension("TeamDejaView.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 
@@ -261,7 +261,7 @@ if __name__ == "__main__":
     test("Debug configuration validates required fields", async function () {
         this.timeout(10000);
 
-        const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
+        const extension = vscode.extensions.getExtension("TeamDejaView.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 
@@ -289,7 +289,7 @@ if __name__ == "__main__":
     test("Extension supports Python language for breakpoints", async function () {
         this.timeout(10000);
 
-        const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
+        const extension = vscode.extensions.getExtension("TeamDejaView.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 

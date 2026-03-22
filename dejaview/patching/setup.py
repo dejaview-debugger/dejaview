@@ -5,6 +5,7 @@ import io
 import os
 import random
 import socket
+import subprocess
 import sys
 import time
 import urllib.request
@@ -13,6 +14,7 @@ from functools import wraps
 
 from dejaview import _memory_patch
 from dejaview.patching.custom_patchers import (
+    PopenPatcher,
     SocketInitPatcher,
     SocketMethodPatcher,
     UrlopenPatcher,
@@ -85,8 +87,18 @@ def patch_socket(p: Patches):
     p.patch(socket, "gethostname")
     p.patch(socket, "gethostbyname")
     p.patch(socket, "create_connection")
-    
-    
+
+
+def patch_subprocess(p: Patches):
+    p.patch(subprocess, "run")
+    p.patch(subprocess, "Popen", PopenPatcher)
+    p.patch(subprocess, "check_output")
+    p.patch(subprocess, "check_call")
+    p.patch(subprocess, "call")
+    p.patch(subprocess, "getoutput")
+    p.patch(subprocess, "getstatusoutput")
+
+
 def patch_io(p: Patches):
     # Replace concrete classes inside the already-imported io module with their
     # pure Python (_pyio) equivalents. The C _io classes call C-level syscalls
@@ -182,6 +194,7 @@ def setup_patching():
     p.add(datetime_patch())
     p.add(memory_patch())
     patch_socket(p)
+    patch_subprocess(p)
     patch_urllib(p)
     patch_sys(p)
     patch_io(p)
