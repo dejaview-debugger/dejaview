@@ -4,12 +4,10 @@ import json
 import os
 import pdb
 import sys
-import tomllib
 import traceback
 import types
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from random import randbytes
 from typing import (
     Any,
@@ -46,25 +44,8 @@ from dejaview.snapshots.snapshots import (
 
 original_print = print  # save original print so we don't use the patched version
 
-
-def _load_debug_from_pyproject() -> bool:
-    """Read the DejaView debug flag from pyproject.toml.
-
-    Uses [tool.dejaview].debug, defaulting to False when unavailable.
-    """
-    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-    try:
-        with pyproject.open("rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return False
-    tool = data.get("tool", {})
-    dejaview_tool = tool.get("dejaview", {})
-    return bool(dejaview_tool.get("debug", False))
-
-
-# Debug mode flag controlled by [tool.dejaview].debug in pyproject.toml
-DEBUG = _load_debug_from_pyproject()
+# Debug mode flag.
+DEBUG = False
 
 
 def debug_log(*args: Any) -> None:
