@@ -1,19 +1,72 @@
 """Custom patchers for functions that return complex stateful objects.
 
 These patchers extend the base :class:`Patcher` protocol for cases where
-simple memoization (:class:`GenericPatcher`) is insufficient — typically
-functions that return file-like objects, network responses, or process
-handles.
+simple memoization (:class:`GenericPatcher`) is insufficient.
 """
 
 from __future__ import annotations
 
 import io
+import socket
 import urllib.response
 from typing import Any, Callable
 
 from dejaview.patching.patcher import GenericPatcher, GenericPatcherState, Patcher
 from dejaview.patching.util import hide_from_traceback
+
+
+def _is_not_af_unix(self: socket.socket, *args: Any, **kwargs: Any) -> bool:
+    """Return True when a socket should be patched (i.e. is not AF_UNIX)."""
+    try:
+        return self.family != socket.AF_UNIX
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _is_af_unix_from_init_args(*args: Any, **kwargs: Any) -> bool:
+    """Check if __init__ args specify AF_UNIX."""
+    # __init__(self, family=AF_INET, type=SOCK_STREAM, proto=0, fileno=None)
+    # args[0] is self
+    family = kwargs.get("family", socket.AF_INET)
+    if len(args) > 1:
+        family = args[1]
+    return family == socket.AF_UNIX
+
+
+class SocketInitPatcher(Patcher[Any, Any]):
+    """Patcher for ``socket.socket.__init__``.
+
+    On play, the real ``__init__`` runs and any exception is captured.
+    On replay, the real ``__init__`` is called again (to create a valid
+    C-level socket) — family/type/proto are determined by the arguments
+    which are the same during replay. All subsequent socket methods are
+    memoized by ``GenericPatcher`` (via ``should_patch``).
+
+    AF_UNIX sockets are never patched — they pass through directly.
+    """
+
+    @staticmethod
+    def play(func: Callable, *args: Any, **kwargs: Any):  # noqa: ANN205
+        if _is_af_unix_from_init_args(*args, **kwargs):
+            func(*args, **kwargs)
+            return (lambda: None), None
+
+        return GenericPatcher.play(func, *args, **kwargs)
+
+    @staticmethod
+    @hide_from_traceback
+    def replay(func: Callable, state: Any, *args: Any, **kwargs: Any) -> Any:
+        if state is None:
+            # AF_UNIX — pass through
+            return func(*args, **kwargs)
+
+        # Re-raise captured exception if __init__ failed during play
+        if isinstance(state, GenericPatcherState) and state.exc_info is not None:
+            return GenericPatcher.replay(func, state, *args, **kwargs)
+
+        # Create a real socket — family/type/proto come from the args
+        return func(*args, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Sub-processes
