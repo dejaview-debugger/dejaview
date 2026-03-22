@@ -16,8 +16,8 @@ from dejaview import _memory_patch
 from dejaview.patching.custom_patchers import (
     PopenPatcher,
     SocketInitPatcher,
-    SocketMethodPatcher,
     UrlopenPatcher,
+    _is_not_af_unix,
 )
 from dejaview.patching.patching import Patches, PatchingMode, get_patching_mode
 
@@ -63,8 +63,8 @@ def patch_socket(p: Patches):
     # (family, type, proto) while keeping a real underlying socket object.
     p.patch(socket.socket, "__init__", SocketInitPatcher)
 
-    # Instance methods use SocketMethodPatcher which skips AF_UNIX sockets
-    # to avoid breaking multiprocessing internals (see !33).
+    # Instance methods skip AF_UNIX sockets to avoid breaking
+    # multiprocessing internals (see !33).
     for method in (
         "bind",
         "connect",
@@ -80,7 +80,7 @@ def patch_socket(p: Patches):
         "setsockopt",
         "getsockname",
     ):
-        p.patch(socket.socket, method, SocketMethodPatcher)
+        p.patch(socket.socket, method, should_patch=_is_not_af_unix)
 
     # Module-level functions are safe to use GenericPatcher
     p.patch(socket, "getaddrinfo")

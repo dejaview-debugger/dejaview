@@ -15,10 +15,7 @@ class TestSocketPatching:
         )
 
         d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
-        d.sendline("n")
-        d.assert_line_number(3)
+        d.run_to(3)
 
         # Execute line 3
         d.sendline("n")
@@ -46,10 +43,7 @@ class TestSocketPatching:
         )
 
         d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
-        d.sendline("n")
-        d.assert_line_number(3)
+        d.run_to(3)
 
         # Execute line 3
         d.sendline("n")
@@ -80,18 +74,13 @@ class TestSocketPatching:
         )
 
         d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
-        d.sendline("n")
-        d.assert_line_number(3)
-        d.sendline("n")
-        d.assert_line_number(4)
+        d.run_to(4)
 
         # Execute line 4 — prints family/type/proto
         d.sendline("n")
         out1 = d.assert_line_number(5)
 
-        # Step back and replay — consume prompt after each back
+        # Step back and replay
         d.sendline("back")
         d.assert_line_number(4)
         d.sendline("back")
@@ -119,12 +108,7 @@ class TestSocketPatching:
         )
 
         d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
-        d.sendline("n")
-        d.assert_line_number(3)
-        d.sendline("n")
-        d.assert_line_number(4)
+        d.run_to(4)
 
         d.sendline("n")
         out1 = d.assert_line_number(5)
