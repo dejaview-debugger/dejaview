@@ -823,6 +823,8 @@ class DejaView:
             # Initialize the private backing variables for the properties
             self._last_stopped_frame = None
             self._last_stopped_lineno = None
+            # Tracks a just-emitted call stop so user_line does not emit it again.
+            self._pending_call_stop: tuple[str, int] | None = None
 
             # Set up command handler if socket is available
             if self.socket_client and self.socket_client.connected:
@@ -1064,22 +1066,31 @@ class DejaView:
 
             # Send stopped event BEFORE calling super() which blocks in cmdloop
             if self.socket_client and self.socket_client.connected:
-                # Capture the state RIGHT NOW before anything else happens
-                self.last_stopped_frame = frame
-                # Convert to int() to ensure we get the value
-                self.last_stopped_lineno = int(frame.f_lineno)
+                current_location = (frame.f_code.co_filename, int(frame.f_lineno))
+                if self._pending_call_stop == current_location:
+                    debug_log(
+                        "[PDB] Skipping duplicate user_line stopped event "
+                        f"for call-stop location {current_location[0]}:"
+                        f"{current_location[1]}"
+                    )
+                    self._pending_call_stop = None
+                else:
+                    # Capture the state RIGHT NOW before anything else happens
+                    self.last_stopped_frame = frame
+                    # Convert to int() to ensure we get the value
+                    self.last_stopped_lineno = int(frame.f_lineno)
 
-                # Send the line number directly in the stopped event so
-                # VS Code knows where we are. This avoids race conditions
-                # with querying the stack later
-                debug_log(
-                    f"[PDB] user_line #{self.user_line_call_count} "
-                    f"(id={self.instance_id}): Sending stopped event with "
-                    f"lineno = {frame.f_lineno}"
-                )
-                self.socket_client.send_stopped_with_location(
-                    "step", frame.f_code.co_filename, frame.f_lineno
-                )
+                    # Send the line number directly in the stopped event so
+                    # VS Code knows where we are. This avoids race conditions
+                    # with querying the stack later
+                    debug_log(
+                        f"[PDB] user_line #{self.user_line_call_count} "
+                        f"(id={self.instance_id}): Sending stopped event with "
+                        f"lineno = {frame.f_lineno}"
+                    )
+                    self.socket_client.send_stopped_with_location(
+                        "step", frame.f_code.co_filename, frame.f_lineno
+                    )
             else:
                 debug_log("[PDB] Socket not connected, cannot send stopped event")
             # Now call super which will block in cmdloop
@@ -1101,8 +1112,18 @@ class DejaView:
                 f"Set last_stopped_lineno = {self.last_stopped_lineno}"
             )
 
-            # Don't send stopped event here, wait for user_line
-            # which is called right after
+            if self.socket_client and self.socket_client.connected:
+                filename = frame.f_code.co_filename
+                lineno = int(frame.f_lineno)
+                self._pending_call_stop = (filename, lineno)
+                debug_log(
+                    f"[PDB] user_call #{self.user_call_count} "
+                    f"(id={self.instance_id}): Sending stopped event with "
+                    f"lineno = {lineno}"
+                )
+                self.socket_client.send_stopped_with_location("step", filename, lineno)
+
+            # Continue with pdb handling after notifying the adapter.
             super().user_call(frame, argument_list)
 
         def user_return(self, frame, return_value):
