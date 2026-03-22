@@ -129,16 +129,6 @@ class ProbeBreakpointRequest:
 
 
 @dataclass
-class ProbePreviousLineInFileRequest:
-    """
-    Find the last line event in a given source file before a position.
-    """
-
-    before: CounterPosition
-    filename: str
-
-
-@dataclass
 class ReverseContinueRequest:
     """
     Go to last breakpoint before the given position.
@@ -165,9 +155,7 @@ class QuitRequest:
     pass
 
 
-RequestForReplay = (
-    ReverseToTargetRequest | ProbeBreakpointRequest | ProbePreviousLineInFileRequest
-)
+RequestForReplay = ReverseToTargetRequest | ProbeBreakpointRequest
 RequestForRootOnly = ContinueRequest | ReverseContinueRequest | QuitRequest
 RequestForRoot = RequestForReplay | RequestForRootOnly
 
@@ -602,56 +590,7 @@ class DejaView:
         request = ReverseToTargetRequest(to=pattern)
         self.execute_request(request)
 
-    def _selected_frame_matches_counter_top(self) -> bool:
-        """Whether pdb's selected frame matches the traced top frame."""
-        pdb_instance = self.pdb
-        if pdb_instance is None:
-            return True
-
-        selected = getattr(pdb_instance, "curframe", None)
-        top = self.counter.stack[-1].frame if self.counter.stack else None
-        if selected is None or top is None:
-            return True
-
-        return selected.f_code.co_filename == top.f_code.co_filename and int(
-            selected.f_lineno
-        ) == int(top.f_lineno)
-
     def reverse_next(self):
-        # In post-mortem, pdb may select a traceback frame that differs from
-        # the traced frame used by counter positions. Stack-based reverse-next
-        # can then jump to an unrelated frame (often <string>). Use probe-only
-        # lookup in that case and do nothing if no prior matching line is found.
-        if not self._selected_frame_matches_counter_top():
-            target_file = None
-            pdb_instance = self.pdb
-            if pdb_instance is not None:
-                curframe = getattr(pdb_instance, "curframe", None)
-                if curframe is not None:
-                    target_file = curframe.f_code.co_filename
-
-            debug_log(
-                "reverse_next: selected frame differs from counter top; "
-                "probing previous line in selected file"
-            )
-
-            if target_file is not None:
-                probe_result = self.execute_request_with_return(
-                    ProbePreviousLineInFileRequest(
-                        before=self.counter.position,
-                        filename=target_file,
-                    )
-                )
-                to_counts = probe_result.to_counts
-                if to_counts is not None:
-                    self.execute_request(ReverseToTargetRequest(to=to_counts.global_))
-                    return
-
-            debug_log(
-                "reverse_next: probe found no previous line in selected file; no-op"
-            )
-            return
-
         pos = self.counter.position.stack
         counts = list(pos.counts)
         if counts[-1] == 0:
@@ -849,32 +788,6 @@ class DejaView:
 
                             if self.get_pdb().break_here(event.frame):
                                 last_breakpoint = counts
-
-                self.counter.allow_breakpoints = False
-                self.counter.add_handler_generator(handler())
-
-            case ProbePreviousLineInFileRequest():
-
-                def handler() -> Generator[None, Event, None]:
-                    with patching.set_patching_mode(patching.PatchingMode.MUTED):
-                        last_match: CounterPosition | None = None
-
-                        while True:
-                            event = yield
-                            counts = self.counter.position
-                            if counts == request.before:
-                                self.snapshot_manager.return_from_replay(
-                                    ResumeSnapshotReturn(
-                                        LastBreakpointResult(last_match)
-                                    )
-                                )
-                                assert_never()
-
-                            if event.event != "line":
-                                continue
-
-                            if event.frame.f_code.co_filename == request.filename:
-                                last_match = counts
 
                 self.counter.allow_breakpoints = False
                 self.counter.add_handler_generator(handler())
