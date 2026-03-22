@@ -12,7 +12,7 @@ curl -sL https://github.com/psf/black/archive/refs/tags/26.3.1.tar.gz | tar -xz 
 cd "$BLACK_DIR"
 
 # Create venv with Python 3.12 (required by dejaview)
-uv venv --python 3.12 .venv
+uv venv --python 3.12 .venv --clear
 
 # Install black and its runtime dependencies into the venv
 uv pip install --python "$BLACK_DIR/.venv/bin/python" -e ".[d]"

@@ -85,7 +85,7 @@ DejaView is a tool that adds "step back" (time-travel debugging) capabilities to
 
 - **`dejaview/`**: The core Python package.
   - **`counting/`**: Implements deterministic frame counting and socket client for communication.
-  - **`patching/`**: Handles runtime patching of Python internals/modules.
+  - **`patching/`**: Handles runtime patching of Python internals/modules. See [`docs/patching.md`](../docs/patching.md) for the patching model, decision guidelines, and common pitfalls.
   - **`_memory_patch/`**: Type stubs (`.pyi`) for the Rust native extension.
   - **`snapshots/`**: Implements `safe_fork` and snapshot management for state restoration.
   - **`tests/`**: Unit and integration tests.
@@ -117,6 +117,7 @@ The project uses CircleCI for continuous integration. The pipeline (`.circleci/c
 Ensure local changes pass these commands before pushing.
 
 ### Notes for Agents
+- **Patching:** Before making ANY changes to `dejaview/patching/`, you MUST read `docs/patching.md` in full. It contains critical decision guidelines, a preference ordering for patching approaches, and common pitfalls. Failing to follow these guidelines will result in brittle or incorrect patches.
 - **Pathing:** When working on the extension, remember that its root is `dejaview-extension/`, but the Python code it interacts with is at the repo root.
 - **Tools:** Use `uv` for all Python-related tasks. Never try to use `pip` or `venv` directly.
 - **Rust Extension:** The `_memory_patch` module is compiled from `src/lib.rs` via `maturin`. Keep `dejaview/_memory_patch/__init__.pyi` in sync with the Rust API.
