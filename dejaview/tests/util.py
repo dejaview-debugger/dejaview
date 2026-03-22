@@ -3,6 +3,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from functools import cache
@@ -11,6 +12,8 @@ from textwrap import dedent
 from typing import List, Optional
 
 import pexpect  # type: ignore[import-untyped]
+
+from dejaview.patching import backdoor
 
 _TEMP_DIRS: list[Path] = []
 
@@ -58,6 +61,19 @@ def get_repo_root() -> str:
         check=True,
     )
     return proc.stdout.strip()
+
+
+@contextmanager
+def pretend_replay():
+    """
+    Used for patching unit tests.
+    """
+
+    backdoor._is_replay = True
+    try:
+        yield
+    finally:
+        backdoor._is_replay = False
 
 
 class DejaViewInstance(pexpect.spawn):

@@ -10,3 +10,6 @@
 2. Run `uv run prek` to check for style and typing issues.
 4. Run `uv run pytest` to run the test suite.
 5. Open a pull request that explains the change, expected behavior, and any test gaps.
+
+## Patching
+If you are adding or modifying patches for deterministic replay, read [`docs/patching.md`](docs/patching.md) first. It covers the patching model, decision guidelines, and common pitfalls.
