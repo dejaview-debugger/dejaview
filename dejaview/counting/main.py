@@ -5,7 +5,7 @@ import sys
 import traceback
 import typing
 
-from dejaview.counting.dejaview import DejaView
+from dejaview.counting.dejaview import DejaView, ReverseToTargetRequest
 from dejaview.counting.error_detection import StreamMismatchError
 from dejaview.counting.socket_client import DebugSocketClient
 from dejaview.snapshots.snapshots import DEFAULT_SNAPSHOT_INTERVAL
@@ -128,11 +128,36 @@ def main():
                 traceback.print_exc()
                 sys.exit(1)
             except BaseException as e:
+                tb_text = traceback.format_exc()
                 traceback.print_exc()
-                print("Uncaught exception. Entering post mortem debugging")
-                print("Running 'cont' or 'step' will restart the program")
+                post_mortem_msg = "Uncaught exception. Entering post mortem debugging"
+                restart_hint_msg = "Running 'cont' or 'step' will restart the program"
+                print(post_mortem_msg)
+                print(restart_hint_msg)
                 t = e.__traceback__
-                my_pdb.interaction(None, t)
+                if socket_client:
+                    socket_client.send_output(tb_text, "stderr")
+                    socket_client.send_output(post_mortem_msg + "\n", "stderr")
+                    socket_client.send_output(restart_hint_msg + "\n", "stderr")
+                    # Top-level uncaught exceptions can bypass user_exception(),
+                    # so explicitly notify the adapter that we stopped.
+                    tb = t
+                    while tb and tb.tb_next is not None:
+                        tb = tb.tb_next
+
+                    if tb is not None:
+                        socket_client.send_stopped_with_location(
+                            "exception",
+                            tb.tb_frame.f_code.co_filename,
+                            tb.tb_lineno,
+                        )
+                    else:
+                        socket_client.send_stopped("exception")
+                dejaview.execute_request(
+                    ReverseToTargetRequest(
+                        to=dejaview.counter.last_exception_position.global_
+                    )
+                )
                 print(
                     "Post mortem debugger finished. The "
                     + target
