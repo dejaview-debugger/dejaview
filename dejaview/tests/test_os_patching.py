@@ -499,7 +499,10 @@ def test_urandom():
 # Side-effect functions
 # ==============================================================================
 
-# --- Create / remove ---
+
+def _get_printed_value(step_output: str) -> str:
+    lines = step_output.strip().split("\n")
+    return lines[1].strip()
 
 
 def test_mkdir_replay():
@@ -523,10 +526,6 @@ def test_mkdir_replay():
             """
         )
 
-        def get_printed_value(step_output: str) -> str:
-            lines = step_output.strip().split("\n")
-            return lines[1].strip()
-
         # Execute through line 3
         d.assert_line_number(1)
         d.sendline("n")
@@ -535,7 +534,7 @@ def test_mkdir_replay():
         d.assert_line_number(3)
         d.sendline("n")
         step_out = d.assert_line_number(4)
-        value_play = get_printed_value(step_out)
+        value_play = _get_printed_value(step_out)
 
         # Step back to line 2 and replay
         d.sendline("back")
@@ -547,7 +546,7 @@ def test_mkdir_replay():
         d.assert_line_number(3)
         d.sendline("n")
         step_out = d.assert_line_number(4)
-        value_replay = get_printed_value(step_out)
+        value_replay = _get_printed_value(step_out)
 
         assert value_play == value_replay, (
             f"mkdir replay mismatch: {value_play!r} vs {value_replay!r}"
@@ -728,267 +727,6 @@ def test_unsetenv_replay():
         else:
             _real_os.unsetenv(key)
             _real_os.environ.pop(key, None)
-
-
-# ==============================================================================
-# Process management
-# ==============================================================================
-
-
-def _get_printed_value(step_output: str) -> str:
-    lines = step_output.strip().split("\n")
-    return lines[1].strip()
-
-
-def _verify_wait_like_replay(wait_stmt: str) -> None:
-    """Verify that a wait-family call is deterministic across replay.
-
-    The child *must* be forked inside the dejaview script because wait-family
-    syscalls operate on children of the **calling** process.  The dejaview
-    subprocess is the process performing the wait, so the forked child must be
-    its own child — not a child of the outer pytest process.
-
-    The child exits immediately (``os._exit(0)``), and the wait call in the
-    script reaps it during both play and replay.  No external cleanup is
-    required after the dejaview session finishes.
-    """
-    d = launch_dejaview(
-        f"""
-        import os
-        pid = os.fork() or os._exit(0)
-        result = {wait_stmt}
-        print(result)
-        print()
-        """
-    )
-
-    d.assert_line_number(1)
-    d.sendline("n")
-    d.assert_line_number(2)
-    d.sendline("n")
-    d.assert_line_number(3)
-    d.sendline("n")
-    d.assert_line_number(4)
-    d.sendline("n")
-    play_out = d.assert_line_number(5)
-    value_play = _get_printed_value(play_out)
-
-    d.sendline("back")
-    d.assert_line_number(4)
-    d.sendline("back")
-    d.assert_line_number(3)
-
-    # Re-run the wait statement during replay.
-    #
-    # This second `n` is expected to be non-blocking because DejaView replays
-    # the memoized result captured during the first execution instead of
-    # issuing a fresh wait syscall to the kernel. If it performed a real wait
-    # again, there would be no unreaped child left and this step could block
-    # or fail. Stepping immediately to line 5 confirms replay behavior.
-    d.sendline("n")
-    d.assert_line_number(4)
-    d.sendline("n")
-    replay_out = d.assert_line_number(5)
-    value_replay = _get_printed_value(replay_out)
-
-    assert value_play == value_replay, (
-        f"wait replay mismatch: {value_play!r} vs {value_replay!r}"
-    )
-    d.quit()
-    # No external cleanup needed: the child was already reaped by the wait
-    # call inside the dejaview session.
-
-
-def _verify_signal_like_replay(kill_stmt: str, pgid: bool = False) -> None:
-    """Verify that a signal-family call is deterministic across replay.
-
-    The child process is created and owned by the **pytest** process (not by
-    the dejaview script), so cleanup is guaranteed even if the dejaview session
-    crashes.  The child's literal PID is embedded into the dejaview script so
-    the script stays as simple as possible — just the call under test, a
-    ``print``, and an end marker.
-
-    The child is held alive via a pipe while the dejaview session runs.  After
-    the session finishes the pytest process releases the child (by writing to
-    the pipe) and reaps it with ``os.waitpid``.
-
-    Args:
-        kill_stmt: An expression that uses the token ``pid`` to refer to the
-            child's PID.  The token is replaced with the literal PID before the
-            script is passed to dejaview, e.g. ``"os.kill(pid, 0)"``.
-        pgid: When ``True`` the child calls ``os.setpgrp()`` so that it
-            becomes a process-group leader.  Use this for ``os.killpg`` tests
-            where the kill target is a process group rather than a single PID.
-    """
-    # --- set up child in pytest (the "main" process) ---
-    r, w = _real_os.pipe()
-    child_pid = _real_os.fork()
-    if child_pid == 0:
-        if pgid:
-            _real_os.setpgrp()
-        _real_os.close(w)
-        _real_os.read(r, 1)  # block until the parent releases us
-        _real_os._exit(0)
-    _real_os.close(r)
-
-    try:
-        # Embed the literal PID so the dejaview script needs no child
-        # management of its own.
-        script_stmt = kill_stmt.replace("pid", str(child_pid))
-        d = launch_dejaview(
-            f"""
-            import os
-            result = {script_stmt}
-            print(result)
-            print()
-            """
-        )
-
-        # Play: step through to the print line and capture the result.
-        d.assert_line_number(1)
-        d.sendline("n")
-        d.assert_line_number(2)
-        d.sendline("n")
-        d.assert_line_number(3)
-        d.sendline("n")
-        play_out = d.assert_line_number(4)
-        value_play = _get_printed_value(play_out)
-
-        # Replay: back up to the kill line and re-execute.
-        d.sendline("back")
-        d.assert_line_number(3)
-        d.sendline("back")
-        d.assert_line_number(2)
-        d.sendline("n")
-        d.assert_line_number(3)
-        d.sendline("n")
-        replay_out = d.assert_line_number(4)
-        value_replay = _get_printed_value(replay_out)
-
-        assert value_play == value_replay, (
-            f"signal replay mismatch: {value_play!r} vs {value_replay!r}"
-        )
-        d.quit()
-
-    finally:
-        # Release the child (unblock its os.read) and reap it.
-        _real_os.write(w, b"x")
-        _real_os.close(w)
-        _real_os.waitpid(child_pid, 0)
-
-
-def _verify_spawn_like_replay(spawn_stmt: str) -> None:
-    """Verify that an os.spawn*/os.posix_spawn* call is deterministic across replay.
-
-    The child process is created by the dejaview script (not by pytest) because
-    os.waitpid must be called by the same process that spawned the child.  The
-    child is ``/bin/true`` which exits immediately, so the wait call during play
-    blocks only for the brief time the child needs to exit.
-
-    During replay, *both* the spawn call and the subsequent ``os.waitpid`` return
-    their memoized results without touching the kernel:
-
-    * The spawn call returns the recorded PID without actually creating a new
-      process — the child is **not** spawned a second time.
-    * ``os.waitpid`` returns its memoized ``(pid, status)`` tuple immediately,
-      so it cannot block even though the original child no longer exists.
-
-    To explicitly verify no process is spawned on replay, we probe whether the
-    replayed PID still exists using ``os.kill(pid, 0)`` under
-    ``set_patching_mode(PatchingMode.OFF)``. The probe uses an ``if`` branch to
-    emit ``"child-alive"`` or ``"child-gone"``.
-    """
-    d = launch_dejaview(
-        f"""
-        import os
-        from dejaview.patching.patching import PatchingMode, set_patching_mode
-
-        def child_liveness_marker(pid):
-            alive = False
-            with set_patching_mode(PatchingMode.OFF):
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except ProcessLookupError:
-                    pass
-            if alive:
-                return "child-alive"
-            return "child-gone"
-
-        pid = {spawn_stmt}
-        os.waitpid(pid, 0)
-        marker = child_liveness_marker(pid)
-        print(marker)
-        print(pid)
-        print()
-        """
-    )
-
-    # Play: execute spawn+wait and record marker + pid outputs.
-    d.assert_line_number(1)
-    d.sendline("n")
-    d.assert_line_number(2)
-    d.sendline("n")
-    d.assert_line_number(4)
-    d.sendline("n")
-    d.assert_line_number(16)
-    d.sendline("n")
-    d.assert_line_number(17)
-    d.sendline("n")
-    d.assert_line_number(18)
-    d.sendline("n")
-    d.assert_line_number(19)
-    d.sendline("n")
-    marker_play_out = d.assert_line_number(20)
-    marker_play = _get_printed_value(marker_play_out)
-    d.sendline("n")
-    pid_play_out = d.assert_line_number(21)
-    value_play = _get_printed_value(pid_play_out)
-
-    # Back up to just before the spawn call.
-    d.sendline("back")
-    d.assert_line_number(20)
-    d.sendline("back")
-    d.assert_line_number(19)
-    d.sendline("back")
-    d.assert_line_number(18)
-    d.sendline("back")
-    d.assert_line_number(17)
-    d.sendline("back")
-    d.assert_line_number(16)
-    d.sendline("back")
-    d.assert_line_number(4)
-    d.sendline("back")
-    d.assert_line_number(2)
-
-    # Replay: spawn/wait should be memoized and marker should stay child-gone.
-    d.sendline("n")
-    d.assert_line_number(4)
-    d.sendline("n")
-    d.assert_line_number(16)
-    d.sendline("n")
-    d.assert_line_number(17)
-    d.sendline("n")
-    d.assert_line_number(18)
-    d.sendline("n")
-    d.assert_line_number(19)
-    d.sendline("n")
-    marker_replay_out = d.assert_line_number(20)
-    marker_replay = _get_printed_value(marker_replay_out)
-    d.sendline("n")
-    pid_replay_out = d.assert_line_number(21)
-    value_replay = _get_printed_value(pid_replay_out)
-
-    assert marker_play == "child-gone", (
-        f"play unexpectedly reports child still alive: {marker_play!r}"
-    )
-    assert marker_replay == "child-gone", (
-        f"replay appears to have spawned a process (marker={marker_replay!r})"
-    )
-    assert value_play == value_replay, (
-        f"spawn replay mismatch: {value_play!r} vs {value_replay!r}"
-    )
-    d.quit()
 
 
 # ==============================================================================
