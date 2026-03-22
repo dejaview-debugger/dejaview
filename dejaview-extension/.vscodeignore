@@ -9,3 +9,7 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
+.mypy_cache/**
+node_modules/**
+.gitattributes
+dejaview
