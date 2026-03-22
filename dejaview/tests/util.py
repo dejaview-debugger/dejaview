@@ -416,7 +416,7 @@ def verify_deterministic_mutated_value_util(
     imports: str,
     read_stmts: str | list[str],
     mutate_stmts: str | list[str],
-    parse_value: Callable[[str], Any] = lambda out: out.strip().split("\n")[1].strip(),
+    parse_value: Callable[[str], Any] = lambda out: out.strip(),
     assert_changed: bool = True,
 ) -> tuple[Any, Any]:
     """
@@ -431,9 +431,9 @@ def verify_deterministic_mutated_value_util(
         {read_stmts}        # block A again
         print()             # sentinel
 
-    Executes forward through all lines, capturing the printed value from each
-    read block.  Then steps back to the first read block, replays everything,
-    and asserts that the captured values are identical.
+    Runs the program to completion twice using ``continue``. The first pass is
+    normal execution; after DejaView restarts, the second pass is replay.
+    Captured values from both full runs must match.
 
     Args:
         imports: Import statements (may be multi-line).
@@ -442,8 +442,8 @@ def verify_deterministic_mutated_value_util(
             a list of strings.  This block is executed twice (before and after
             the mutation).
         mutate_stmts: Statement(s) that change state between the two reads.
-        parse_value: Extracts the interesting value from the raw pdb step
-            output.  Default grabs the second line (the printed text).
+        parse_value: Extracts the interesting value from the printed output
+            line captured for each read block.
         assert_changed: If *True*, assert that the value changed after
             mutation (``before != after``).
 
@@ -456,7 +456,7 @@ def verify_deterministic_mutated_value_util(
     if isinstance(mutate_stmts, str):
         mutate_stmts = [mutate_stmts]
 
-    # ── Build the script ──────────────────────────────────────────────────
+    # ── Build the script with stable markers ──────────────────────────────
     import_lines = [
         line.strip() for line in imports.strip().split("\n") if line.strip()
     ]
@@ -464,74 +464,68 @@ def verify_deterministic_mutated_value_util(
     script_lines: list[str] = []
     script_lines.extend(import_lines)
 
-    first_read_start = len(script_lines) + 1  # 1-based
+    script_lines.append('print("__DJV_READ1_BEGIN__")')
     script_lines.extend(read_stmts)
-    first_read_end = len(script_lines)  # print line
+    script_lines.append('print("__DJV_READ1_END__")')
 
     script_lines.extend(mutate_stmts)
 
+    script_lines.append('print("__DJV_READ2_BEGIN__")')
     script_lines.extend(read_stmts)
-    second_read_end = len(script_lines)  # print line
-
-    script_lines.append("print()")
+    script_lines.append('print("__DJV_READ2_END__")')
+    script_lines.append('print("__DJV_DONE__")')
 
     script = "\n".join(script_lines)
 
-    # ── Forward pass ──────────────────────────────────────────────────────
+    def _extract_between_markers(output: str, begin: str, end: str) -> str:
+        pattern = rf"{re.escape(begin)}\r?\n(.*?)\r?\n{re.escape(end)}"
+        m = re.search(pattern, output, re.DOTALL)
+        assert m is not None, (
+            f"Could not find marker block {begin}..{end} in output:\n{output}"
+        )
+        block = m.group(1)
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        assert lines, f"No non-empty lines found between {begin} and {end}."
+        return lines[-1]
+
+    # ── Two full passes: play then replay ────────────────────────────────
     d = launch_dejaview(script)
 
-    # Advance to the first-read print line
-    d.assert_line_number(1)
-    for line_num in range(1, first_read_end):
-        d.sendline("n")
-        d.assert_line_number(line_num + 1)
+    d.expect_prompt()
+    d.sendline("c")
+    play_out = d.expect_prompt()
 
-    # Execute the first-read print → capture
-    d.sendline("n")
-    step_out = d.assert_line_number(first_read_end + 1)
-    value_before = parse_value(step_out)
+    before_play_line = _extract_between_markers(
+        play_out, "__DJV_READ1_BEGIN__", "__DJV_READ1_END__"
+    )
+    after_play_line = _extract_between_markers(
+        play_out, "__DJV_READ2_BEGIN__", "__DJV_READ2_END__"
+    )
 
-    # Execute mutation + second-read pre-print lines
-    for line_num in range(first_read_end + 1, second_read_end):
-        d.sendline("n")
-        d.assert_line_number(line_num + 1)
-
-    # Execute the second-read print → capture
-    d.sendline("n")
-    step_out = d.assert_line_number(second_read_end + 1)
-    value_after = parse_value(step_out)
+    value_before = parse_value(before_play_line)
+    value_after = parse_value(after_play_line)
 
     if assert_changed:
         assert value_before != value_after, (
             f"Expected values to differ after mutation, but both are {value_before!r}"
         )
 
-    # ── Replay pass ───────────────────────────────────────────────────────
-    # Step back to first_read_start
-    current = second_read_end + 1
-    while current > first_read_start:
-        d.sendline("back")
-        current -= 1
-        d.assert_line_number(current)
+    d.sendline("c")
+    replay_out = d.expect_prompt()
 
-    # Replay first-read block
-    for line_num in range(first_read_start, first_read_end):
-        d.sendline("n")
-        d.assert_line_number(line_num + 1)
-    d.sendline("n")
-    step_out = d.assert_line_number(first_read_end + 1)
-    value_before_replay = parse_value(step_out)
+    before_replay_line = _extract_between_markers(
+        replay_out, "__DJV_READ1_BEGIN__", "__DJV_READ1_END__"
+    )
+    after_replay_line = _extract_between_markers(
+        replay_out, "__DJV_READ2_BEGIN__", "__DJV_READ2_END__"
+    )
+
+    value_before_replay = parse_value(before_replay_line)
     assert value_before == value_before_replay, (
         f"Replay mismatch (before): {value_before!r} vs {value_before_replay!r}"
     )
 
-    # Replay mutation + second-read block
-    for line_num in range(first_read_end + 1, second_read_end):
-        d.sendline("n")
-        d.assert_line_number(line_num + 1)
-    d.sendline("n")
-    step_out = d.assert_line_number(second_read_end + 1)
-    value_after_replay = parse_value(step_out)
+    value_after_replay = parse_value(after_replay_line)
     assert value_after == value_after_replay, (
         f"Replay mismatch (after): {value_after!r} vs {value_after_replay!r}"
     )
@@ -542,9 +536,8 @@ def verify_deterministic_mutated_value_util(
 
 def verify_deterministic_memoized_value_util(
     imports: str,
-    expr: str,
-    # Default to first line of output
-    get_value: Callable[[str], Any] = lambda output: output.strip().split()[1],
+    read_stmts: str | list[str],
+    parse_value: Callable[[str], Any] = lambda output: output.strip(),
     compare: Optional[Callable[[Any, Any], bool]] = None,
 ) -> None:
     """
@@ -552,54 +545,20 @@ def verify_deterministic_memoized_value_util(
 
     Args:
         imports: Import statements needed (e.g. "import os").
-        expr: The expression to evaluate (e.g. "os.getpid()").
-        get_value: Optional function to parse the value from the debugger output.
+        read_stmts: Statement(s) that read and print a value. The last
+            statement should print the value to compare.
+        parse_value: Optional function to parse the printed value line.
         compare: Optional function to compare two successive values (v1, v2).
                  If provided, asserts compare(v1, v2) is True.
                  Commonly used to check v1 != v2 or v1 < v2 for unique/monotonic values.
     """
-    script = f"""
-        {imports}                       # Line 1
-        print()                         # Line 2
-        print({expr})                   # Line 3
-        print({expr})                   # Line 4
-        print()                         # Line 5
-        """
-    d = launch_dejaview(script)
+    val1, val2 = verify_deterministic_mutated_value_util(
+        imports=imports,
+        read_stmts=read_stmts,
+        mutate_stmts=[],
+        parse_value=parse_value,
+        assert_changed=False,
+    )
 
-    # 1. Advance to the first expression (Line 3)
-    d.assert_line_number(1)
-    d.sendline("n")
-    d.assert_line_number(2)
-    d.sendline("n")
-    d.assert_line_number(3)
-
-    # 2. Execute Line 3 -> Line 4 -> Line 5 twice to ensure idempotence (end at line 5)
-    states_pass1 = PropertyTester.test_idempotence_property(d, forward_steps=2)
-
-    # 3. Capture the first value
-    output_line_3 = states_pass1[0].console_output
-    val1 = get_value(output_line_3)
-
-    # 4. Step back from Line 5 -> Line 4 so the next idempotence test
-    d.send_command(DebugCommand.BACK)
-
-    # 5. Execute Line 4 -> Line 5 twice to ensure idempotence (end at line 5)
-    states_pass2 = PropertyTester.test_idempotence_property(d, forward_steps=1)
-
-    # 6. Capture the second value
-    output_line_4 = states_pass2[0].console_output
-    val2 = get_value(output_line_4)
-
-    # 7. Verify relation between values if a comparator is provided
     if compare:
         assert compare(val1, val2), f"Comparison failed for {val1} and {val2}"
-
-    print("value 1 and 2 output:")
-    print(f"Value 1: {val1}")
-    print(f"Value 2: {val2}")
-    print()
-    print(f"{output_line_3}")
-    print()
-    print(f"{output_line_4}")
-    d.quit()

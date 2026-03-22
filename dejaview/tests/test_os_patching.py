@@ -22,7 +22,7 @@ def test_getpid():
     """Test that os.getpid is deterministic."""
     verify_deterministic_memoized_value_util(
         imports="import os",
-        expr="os.getpid()",
+        read_stmts="print(os.getpid())",
         compare=operator.eq,
     )
 
@@ -44,9 +44,7 @@ def test_listdir():
             mutate_stmts=(
                 f"open(os.path.join({repr(tmpdir)}, 'new_file.txt'), 'w').close()"
             ),
-            parse_value=lambda out: ast.literal_eval(
-                out.strip().split("\n")[1].strip()
-            ),
+            parse_value=lambda out: ast.literal_eval(out.strip()),
         )
         assert set(before).issubset(set(after)), (
             f"Expected {before} to be a subset of {after}"
@@ -490,7 +488,7 @@ def test_urandom():
 
     verify_deterministic_memoized_value_util(
         imports=import_stmt,
-        expr=expr,
+        read_stmts=f"print({expr})",
         compare=operator.ne,
     )
 
