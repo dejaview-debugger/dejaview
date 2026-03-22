@@ -334,7 +334,6 @@ def test_io_patch_isinstance():
     d.quit()
 
 
-@pytest.mark.xfail(reason="os module not yet patched", strict=True)
 def test_file_read(tmp_path: Path):
     path = tmp_path / "test_file"
     path.write_text("hello")
@@ -358,7 +357,6 @@ def test_file_read(tmp_path: Path):
     d.quit()
 
 
-@pytest.mark.xfail(reason="os module not yet patched", strict=True)
 def test_file_write(tmp_path: Path):
     path = tmp_path / "test_file"
 
