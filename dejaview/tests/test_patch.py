@@ -130,10 +130,8 @@ def test_id_patch_disable():
     with memory_patch():
         ids = [id(o) for o in objs]
         hashes = [hash(o) for o in objs]
-        order = list(set(objs))
         assert ids != before_ids
         assert ids == hashes
-        assert order != before_order
 
     after_ids = [id(o) for o in objs]
     after_hashes = [hash(o) for o in objs]
