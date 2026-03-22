@@ -99,4 +99,3 @@ This compiles the extension, runs linting, and executes tests in `src/test/exten
 ## References
 
 - Main debugger docs: [https://github.com/dejaview-debugger/dejaview](https://github.com/dejaview-debugger/dejaview)
-- VS Code extension guidelines: [https://code.visualstudio.com/api/references/extension-guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
