@@ -1,4 +1,5 @@
 import inspect
+import sys
 import types
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -36,6 +37,12 @@ class PatchingMode(Enum):
 
 
 _patching_mode = ContextVar("patching_mode", default=PatchingMode.OFF)
+DEBUG = False
+
+
+def debug_log(*args: Any) -> None:
+    if DEBUG:
+        print(*args, file=sys.stderr, flush=True)
 
 
 def get_patching_mode():
@@ -69,7 +76,8 @@ def log_results[F: Callable[..., Any]](
     @wraps(func)
     @hide_from_traceback
     def wrapper(*args: Any, **kwargs: Any):
-        if get_patching_mode() == PatchingMode.OFF:
+        mode = get_patching_mode()
+        if mode == PatchingMode.OFF:
             return func(*args, **kwargs)
 
         nonlocal current_seq
@@ -82,7 +90,9 @@ def log_results[F: Callable[..., Any]](
         #     "contains:",
         #     StateStore.get(func).contains(current_seq),
         # )
-        if is_replay() != StateStore.get(func).contains(current_seq):
+        should_play = is_replay() != StateStore.get(func).contains(current_seq)
+
+        if should_play:
             raise RuntimeError(
                 f"Replay divergence in patched function {func.__qualname__}\n"
                 f"is_replay={is_replay()}\n"

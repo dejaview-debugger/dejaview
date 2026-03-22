@@ -19,9 +19,13 @@ def exit_with_parent():
     if retcode != 0:
         raise RuntimeError("prctl failed with code {}".format(retcode))
 
-    # Handle race: parent may already be dead
-    if os.getppid() == 1:
-        os.kill(os.getpid(), signal.SIGTERM)
+    # Use libc directly instead of os.getppid()/os.getpid() to
+    # avoid going through the patching wrapper, which would
+    # corrupt the sequence counter before StateStore is
+    # deserialized in replay processes.
+    with set_patching_mode(PatchingMode.OFF):
+        if os.getppid() == 1:
+            os.kill(os.getpid(), signal.SIGTERM)
 
 
 @set_patching_mode(PatchingMode.OFF)
@@ -33,7 +37,8 @@ def safe_fork() -> int:
     # We have to save and restore the random state
     # because by default they are changed during fork
     random_state = random.getstate()
-    pid = os.fork()
+    with set_patching_mode(PatchingMode.OFF):
+        pid = os.fork()
     random.setstate(random_state)
     if pid == 0:
         # in child process

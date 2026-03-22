@@ -44,7 +44,7 @@ from dejaview.snapshots.snapshots import (
 
 original_print = print  # save original print so we don't use the patched version
 
-# Debug mode flag - set to False to disable debug logging
+# Debug mode flag.
 DEBUG = False
 
 
@@ -670,6 +670,24 @@ class DejaView:
         return data
 
     def error_detection_handler(self, event: Event) -> bool:
+        if DEBUG:
+            next_count = self.error_detector._count + 1
+            checkpoint = (
+                "checkpoint"
+                if next_count % self.error_detector._period == 0
+                else "event"
+            )
+            mode = "replay" if self.snapshot_manager.is_replay_process else "root"
+            debug_log(
+                "[ERRDET]"
+                f" mode={mode}"
+                f" {checkpoint}"
+                f" next_count={next_count}"
+                f" event={event.event}"
+                f" file={event.frame.f_code.co_filename}"
+                f" line={event.frame.f_lineno}"
+                f" patch_mode={patching.get_patching_mode().name}"
+            )
         self.error_detector.update(self.summarize_event(event))
         return False
 
