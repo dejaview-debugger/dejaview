@@ -305,7 +305,7 @@ def patch_os(p: Patches):
     # --- Environment mutation ---
     # `os.putenv` and `os.unsetenv` do not need to be patched since
     # during replay, Dejaview will go back to a previous snapshot with
-    # the previous environmental variables and the unpatched `putenv` 
+    # the previous environmental variables and the unpatched `putenv`
     # and `unsetenv` should be rerun to ensure no divergence during replays.
 
     # --- Process identity setters ---
