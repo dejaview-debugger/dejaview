@@ -259,29 +259,28 @@ def test_urandom():
 # ==============================================================================
 
 
-# TODO: sort this out
-# def test_mkdir_replay():
-#     """Test that os.mkdir is deterministic on replay.
+def test_mkdir_replay():
+    """Test that os.mkdir is deterministic on replay.
 
-#     Verifies that mkdir can be recorded and replayed deterministically
-#     (the directory exists after both play and replay).
-#     """
-#     with tempfile.TemporaryDirectory() as tmpdir:
-#         non_existent = str(Path(tmpdir, "this_does_not_exist"))
+    Verifies that mkdir can be recorded and replayed deterministically
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        non_existent = str(Path(tmpdir, "this_does_not_exist"))
 
-#         before, after = verify_deterministic_mutated_value_util(
-#             imports="import os",
-#             read_stmts=[
-#                 f"print(os.path.isdir({repr(non_existent)}))",
-#             ],
-#             mutate_stmts=[],
-#             parse_value=lambda out: out.strip().lower() == "false",
-#             assert_changed=False,
-#         )
+        before, after = verify_deterministic_mutated_value_util(
+            imports="import os",
+            read_stmts=[
+                f"print(os.path.isdir({repr(non_existent)}))",
+            ],
+            mutate_stmts=[
+                f"os.mkdir({repr(non_existent)})",
+            ],
+            parse_value=lambda out: out.strip() == "True",
+            assert_changed=True,
+        )
 
-#         # Verify checking a non-existent path is deterministic
-#         assert not before, f"Expected path to not exist, got {before}"
-#         assert not after, f"Expected path to not exist on replay, got {after}"
+        assert before is False, f"Expected path to not exist, got {before}"
+        assert after is True, f"Expected path to exist on replay, got {after}"
 
 
 # --- Environment mutation ---
