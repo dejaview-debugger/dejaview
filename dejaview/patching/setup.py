@@ -303,11 +303,10 @@ def patch_os(p: Patches):
     p.patch(os, "removexattr")
 
     # --- Environment mutation ---
-    # These functions are patched because they have side effects
-    # for the environments. They modify the envionrment variables of
-    # the process and those side effects shoudl not be run during replay
-    p.patch(os, "putenv")
-    p.patch(os, "unsetenv")
+    # `os.putenv` and `os.unsetenv` do not need to be patched since
+    # during replay, Dejaview will go back to a previous snapshot with
+    # the previous environmental variables and the unpatched `putenv` 
+    # and `unsetenv` should be rerun to ensure no divergence during replays.
 
     # --- Process identity setters ---
     p.patch(os, "setuid")

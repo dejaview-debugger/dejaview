@@ -629,7 +629,7 @@ def test_putenv_replay():
             second_replay = ast.literal_eval(_get_printed_value(second_replay_out))
 
             assert first_replay is False
-            assert second_replay is False
+            assert second_replay is True
         finally:
             d.quit()
     finally:
@@ -717,7 +717,7 @@ def test_unsetenv_replay():
             second_replay = ast.literal_eval(_get_printed_value(second_replay_out))
 
             assert first_replay is True
-            assert second_replay is True
+            assert second_replay is False
         finally:
             d.quit()
     finally:
