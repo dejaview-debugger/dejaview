@@ -1226,6 +1226,13 @@ class DejaView:
             if not self.curframe:
                 return
 
+            warning = (
+                "Warning: You are in a replay process. This statement is executed "
+                "in an ephemeral replay sandbox. Changes are not stored for "
+                "future replays and will be reverted."
+            )
+            self.error(warning)
+
             read_fd, write_fd = os.pipe()
             try:
                 pid = safe_fork()

@@ -53,12 +53,12 @@ if __name__ == "__main__":
         this.timeout(10000);
         const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
         assert.ok(extension, "Extension should be present");
-        
+
         await extension.activate();
         assert.ok(extension.isActive, "Extension should be activated");
     });
 
-    test("Debug adapter should be registered for python-pdb type", async function () {
+    test("Debug adapter should be registered for dejaview-python-pdb type", async function () {
         this.timeout(10000);
         const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
         assert.ok(extension);
@@ -68,11 +68,11 @@ if __name__ == "__main__":
         const packageJSON = extension.packageJSON;
         assert.ok(packageJSON.contributes, "Package should have contributions");
         assert.ok(packageJSON.contributes.debuggers, "Package should contribute debuggers");
-        
+
         const debuggers = packageJSON.contributes.debuggers;
-        const pythonPdbDebugger = debuggers.find((d: any) => d.type === "python-pdb");
-        assert.ok(pythonPdbDebugger, "python-pdb debugger should be registered");
-        assert.strictEqual(pythonPdbDebugger.label, "Python (pdb)", "Debugger label should be correct");
+        const pythonPdbDebugger = debuggers.find((d: any) => d.type === "dejaview-python-pdb");
+        assert.ok(pythonPdbDebugger, "dejaview-python-pdb debugger should be registered");
+        assert.strictEqual(pythonPdbDebugger.label, "DejaView Python (pdb)", "Debugger label should be correct");
     });
 
     test("Debug configuration should have correct properties", async function () {
@@ -83,11 +83,11 @@ if __name__ == "__main__":
 
         const packageJSON = extension.packageJSON;
         const debuggers = packageJSON.contributes.debuggers;
-        const pythonPdbDebugger = debuggers.find((d: any) => d.type === "python-pdb");
-        
+        const pythonPdbDebugger = debuggers.find((d: any) => d.type === "dejaview-python-pdb");
+
         assert.ok(pythonPdbDebugger.configurationAttributes, "Should have configuration attributes");
         assert.ok(pythonPdbDebugger.configurationAttributes.launch, "Should have launch configuration");
-        
+
         const launchConfig = pythonPdbDebugger.configurationAttributes.launch;
         assert.ok(launchConfig.required.includes("program"), "Program should be required");
         assert.ok(launchConfig.properties.program, "Should have program property");
@@ -97,7 +97,7 @@ if __name__ == "__main__":
 
     test("Debug session can be started with valid configuration", async function () {
         this.timeout(30000);
-        
+
         const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
@@ -108,13 +108,13 @@ if __name__ == "__main__":
 
         // Create debug configuration
         const debugConfig: vscode.DebugConfiguration = {
-            type: "python-pdb",
+            type: "dejaview-python-pdb",
             name: "Test Debug Session",
             request: "launch",
             program: testPythonFile,
             pythonPath: "python3",
             cwd: testWorkspaceDir,
-            port: 5678
+            port: 5678,
         };
 
         let sessionStarted = false;
@@ -156,7 +156,7 @@ if __name__ == "__main__":
 
     test("Breakpoints can be set in Python files", async function () {
         this.timeout(10000);
-        
+
         const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
@@ -166,37 +166,32 @@ if __name__ == "__main__":
         await vscode.window.showTextDocument(document);
 
         // Create breakpoint at line 9 (in main function)
-        const breakpoint = new vscode.SourceBreakpoint(
-            new vscode.Location(document.uri, new vscode.Position(8, 0))
-        );
+        const breakpoint = new vscode.SourceBreakpoint(new vscode.Location(document.uri, new vscode.Position(8, 0)));
 
         vscode.debug.addBreakpoints([breakpoint]);
 
         const breakpoints = vscode.debug.breakpoints;
         assert.ok(breakpoints.length > 0, "Breakpoints should be added");
-        
-        const sourceBreakpoint = breakpoints.find(bp => 
-            bp instanceof vscode.SourceBreakpoint && 
-            bp.location.uri.fsPath === testPythonFile
-        ) as vscode.SourceBreakpoint | undefined;
-        
+
+        const sourceBreakpoint = breakpoints.find((bp) => bp instanceof vscode.SourceBreakpoint && bp.location.uri.fsPath === testPythonFile) as vscode.SourceBreakpoint | undefined;
+
         assert.ok(sourceBreakpoint, "Source breakpoint should exist for test file");
-        
+
         // Clean up
         vscode.debug.removeBreakpoints(breakpoints);
     });
 
     test("Extension supports step back functionality", async function () {
         this.timeout(10000);
-        
+
         const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 
         const packageJSON = extension.packageJSON;
         const debuggers = packageJSON.contributes.debuggers;
-        const pythonPdbDebugger = debuggers.find((d: any) => d.type === "python-pdb");
-        
+        const pythonPdbDebugger = debuggers.find((d: any) => d.type === "dejaview-python-pdb");
+
         // Verify the adapter supports step back
         // This is indicated by supportsStepBack in the initialize response
         assert.ok(pythonPdbDebugger, "Debugger should be configured");
@@ -231,13 +226,13 @@ if __name__ == "__main__":
 
         // Create debug configuration for second file
         const debugConfig: vscode.DebugConfiguration = {
-            type: "python-pdb",
+            type: "dejaview-python-pdb",
             name: "Test Debug Session 2",
             request: "launch",
             program: secondPythonFile,
             pythonPath: "python3",
             cwd: testWorkspaceDir,
-            port: 5679 // Different port
+            port: 5679, // Different port
         };
 
         let sessionStarted = false;
@@ -265,17 +260,17 @@ if __name__ == "__main__":
 
     test("Debug configuration validates required fields", async function () {
         this.timeout(10000);
-        
+
         const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 
         // Try to start debug session without required 'program' field
         const invalidConfig: vscode.DebugConfiguration = {
-            type: "python-pdb",
+            type: "dejaview-python-pdb",
             name: "Invalid Config",
             request: "launch",
-            pythonPath: "python3"
+            pythonPath: "python3",
             // Missing 'program' field
         };
 
@@ -293,14 +288,14 @@ if __name__ == "__main__":
 
     test("Extension supports Python language for breakpoints", async function () {
         this.timeout(10000);
-        
+
         const extension = vscode.extensions.getExtension("undefined_publisher.dejaview-extension");
         assert.ok(extension);
         await extension.activate();
 
         const packageJSON = extension.packageJSON;
         assert.ok(packageJSON.breakpoints, "Should support breakpoints");
-        
+
         const pythonBreakpoint = packageJSON.breakpoints.find((bp: any) => bp.language === "python");
         assert.ok(pythonBreakpoint, "Should support Python breakpoints");
     });
