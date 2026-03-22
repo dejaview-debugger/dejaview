@@ -39,6 +39,7 @@ class SnapshotInfo:
 
 
 class _Snapshot[ArgType, ReturnType]:
+    @set_patching_mode(PatchingMode.OFF)
     def __init__(
         self,
         snapshot_info: SnapshotInfo,
@@ -62,6 +63,7 @@ class _Snapshot[ArgType, ReturnType]:
         except OSError:
             return False
 
+    @set_patching_mode(PatchingMode.OFF)
     def resume(self, arg: ArgType) -> ReturnType:
         self.arg_queue.put(arg)
         debug_log(
@@ -131,6 +133,7 @@ class SnapshotManager[ArgType, ReturnType]:
         """
         return self.process_type == ProcessType.REPLAY
 
+    @set_patching_mode(PatchingMode.OFF)
     def return_from_replay(self, ret: ReturnType) -> NoReturn:
         """
         Terminate the replay process and pass `ret` to the root process.
@@ -168,6 +171,7 @@ class SnapshotManager[ArgType, ReturnType]:
 
         return True  # New gap is the smallest, snapshot would be wasteful
 
+    @set_patching_mode(PatchingMode.OFF)
     def capture_snapshot(self, position: CounterPosition) -> ArgType | None:
         """
         Capture a snapshot by forking the root process.

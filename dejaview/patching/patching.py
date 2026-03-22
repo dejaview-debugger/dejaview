@@ -1,6 +1,4 @@
 import inspect
-import multiprocessing
-import os
 import sys
 import types
 from contextlib import contextmanager
@@ -47,44 +45,6 @@ def debug_log(*args: Any) -> None:
         print(*args, file=sys.stderr, flush=True)
 
 
-_LOW_LEVEL_IO_NAMES = {
-    "open",
-    "read",
-    "close",
-    "readv",
-    "pread",
-    "preadv",
-    "write",
-    "writev",
-    "pwrite",
-    "pwritev",
-    "lseek",
-}
-_PATCHING_DIR = __file__.rsplit("/", 1)[0]
-_MULTIPROCESSING_IO_BYPASS_NAMES = {
-    "read",
-    "write",
-    "close",
-    "pipe",
-    "pipe2",
-}
-
-_MP_ROOT = os.path.dirname(multiprocessing.__file__)
-
-
-def _is_multiprocessing_file(path: str) -> bool:
-    if not path:
-        return False
-
-    try:
-        # commonpath returns the longest common sub-path.
-        # If the common part IS the multiprocessing root, it's an internal file.
-        return os.path.commonpath([path, _MP_ROOT]) == _MP_ROOT
-    except (ValueError, AttributeError):
-        # ValueError happens if paths are on different drives (Windows)
-        return False
-
-
 def get_patching_mode():
     return _patching_mode.get()
 
@@ -117,40 +77,6 @@ def log_results[F: Callable[..., Any]](
     @hide_from_traceback
     def wrapper(*args: Any, **kwargs: Any):
         mode = get_patching_mode()
-        frame = inspect.currentframe()
-        caller = frame.f_back if frame is not None else None
-        while caller is not None and caller.f_code.co_filename.startswith(
-            _PATCHING_DIR
-        ):
-            caller = caller.f_back
-        caller_file = caller.f_code.co_filename if caller else "<unknown>"
-        caller_line = caller.f_lineno if caller else -1
-
-        # Multiprocessing IPC must always hit real OS functions. These internal
-        # calls are part of debugger transport/snapshot plumbing and should not
-        # consume function sequence numbers used for user-level replay.
-        if (
-            mode != PatchingMode.OFF
-            and _is_multiprocessing_file(caller_file)
-            and func.__name__ in _MULTIPROCESSING_IO_BYPASS_NAMES
-        ):
-            debug_log(
-                "[PATCHDBG] bypass multiprocessing ipc"
-                f" func={func.__module__}.{func.__name__}"
-                f" mode={mode.name}"
-                f" caller={caller_file}:{caller_line}"
-            )
-            return func(*args, **kwargs)
-
-        is_backend = "/dejaview/" in caller_file and "/tests/" not in caller_file
-        if is_backend and mode != PatchingMode.OFF:
-            debug_log(
-                "[PATCHDBG] backend touched patched func"
-                f" func={func.__module__}.{func.__name__}"
-                f" mode={mode.name}"
-                f" caller={caller_file}:{caller_line}"
-            )
-
         if mode == PatchingMode.OFF:
             return func(*args, **kwargs)
 
@@ -165,16 +91,6 @@ def log_results[F: Callable[..., Any]](
         #     StateStore.get(func).contains(current_seq),
         # )
         should_play = is_replay() != StateStore.get(func).contains(current_seq)
-
-        if func.__name__ in _LOW_LEVEL_IO_NAMES:
-            debug_log(
-                "[PATCHDBG] low-level call"
-                f" func={func.__module__}.{func.__name__}"
-                f" seq={current_seq}"
-                f" branch={'play' if should_play else 'replay'}"
-                f" mode={mode.name}"
-                f" caller={caller_file}:{caller_line}"
-            )
 
         if should_play:
             raise RuntimeError(

@@ -464,14 +464,16 @@ def patch_os(p: Patches):
     # os.stat/os.lstat during source lookups.  Those internal
     # calls would advance the sequence counter and corrupt the
     # replay state.
-    _orig_checkcache = linecache.checkcache
 
-    @wraps(_orig_checkcache)
-    def _safe_checkcache(filename=None):
-        with set_patching_mode(PatchingMode.OFF):
-            return _orig_checkcache(filename)
+    def skip_patching(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            with set_patching_mode(PatchingMode.OFF):
+                return func(*args, **kwargs)
 
-    p.replace(linecache, "checkcache", _safe_checkcache)
+        return wrapper
+
+    p.decorate(linecache, "checkcache", skip_patching)
 
 
 def setup_patching():
