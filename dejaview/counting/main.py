@@ -5,7 +5,7 @@ import sys
 import traceback
 import typing
 
-from dejaview.counting.dejaview import DejaView
+from dejaview.counting.dejaview import DejaView, ReverseToTargetRequest
 from dejaview.counting.error_detection import StreamMismatchError
 from dejaview.counting.socket_client import DebugSocketClient
 from dejaview.snapshots.snapshots import DEFAULT_SNAPSHOT_INTERVAL
@@ -147,7 +147,11 @@ def main():
                         )
                     else:
                         socket_client.send_stopped("exception")
-                my_pdb.interaction(None, t)
+                dejaview.execute_request(
+                    ReverseToTargetRequest(
+                        to=dejaview.counter.last_exception_position.global_
+                    )
+                )
                 print(
                     "Post mortem debugger finished. The "
                     + target
