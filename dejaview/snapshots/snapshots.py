@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any, NoReturn, cast
 
 from dejaview.counting.counting import CounterPosition, CounterPositionPattern
+from dejaview.patching.patching import PatchingMode, set_patching_mode
 from dejaview.snapshots.safe_fork import safe_fork
 
 # Debug mode flag - set to False to disable debug logging
@@ -38,6 +39,7 @@ class SnapshotInfo:
 
 
 class _Snapshot[ArgType, ReturnType]:
+    @set_patching_mode(PatchingMode.OFF)
     def __init__(
         self,
         snapshot_info: SnapshotInfo,
@@ -55,11 +57,13 @@ class _Snapshot[ArgType, ReturnType]:
         if self.snapshot_pid is None:
             return False
         try:
-            os.kill(self.snapshot_pid, 0)  # signal 0 = existence check
+            with set_patching_mode(PatchingMode.OFF):
+                os.kill(self.snapshot_pid, 0)  # signal 0 = existence check
             return True
         except OSError:
             return False
 
+    @set_patching_mode(PatchingMode.OFF)
     def resume(self, arg: ArgType) -> ReturnType:
         self.arg_queue.put(arg)
         debug_log(
@@ -81,8 +85,9 @@ class _Snapshot[ArgType, ReturnType]:
         """Terminate the snapshot process to free resources."""
         if self.snapshot_pid is not None:
             try:
-                os.kill(self.snapshot_pid, signal.SIGTERM)
-                os.waitpid(self.snapshot_pid, 0)
+                with set_patching_mode(PatchingMode.OFF):
+                    os.kill(self.snapshot_pid, signal.SIGTERM)
+                    os.waitpid(self.snapshot_pid, 0)
             except (OSError, ChildProcessError):
                 # Process may have already exited if its replay child
                 # crashed or if the OS reaped it.
@@ -128,6 +133,7 @@ class SnapshotManager[ArgType, ReturnType]:
         """
         return self.process_type == ProcessType.REPLAY
 
+    @set_patching_mode(PatchingMode.OFF)
     def return_from_replay(self, ret: ReturnType) -> NoReturn:
         """
         Terminate the replay process and pass `ret` to the root process.
@@ -165,6 +171,7 @@ class SnapshotManager[ArgType, ReturnType]:
 
         return True  # New gap is the smallest, snapshot would be wasteful
 
+    @set_patching_mode(PatchingMode.OFF)
     def capture_snapshot(self, position: CounterPosition) -> ArgType | None:
         """
         Capture a snapshot by forking the root process.
@@ -214,7 +221,8 @@ class SnapshotManager[ArgType, ReturnType]:
                 self.return_queue = snapshot.return_queue
                 return arg
             else:  # snapshot process
-                _, status = os.waitpid(replay_pid, 0)
+                with set_patching_mode(PatchingMode.OFF):
+                    _, status = os.waitpid(replay_pid, 0)
                 snapshot.exit_code_queue.put(os.WEXITSTATUS(status))
 
     def find_best_snapshot(self, target_pattern: CounterPositionPattern) -> int:
