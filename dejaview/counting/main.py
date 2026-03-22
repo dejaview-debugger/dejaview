@@ -132,22 +132,21 @@ def main():
                 print("Uncaught exception. Entering post mortem debugging")
                 print("Running 'cont' or 'step' will restart the program")
                 t = e.__traceback__
+                deepest_tb = t
+                while deepest_tb and deepest_tb.tb_next is not None:
+                    deepest_tb = deepest_tb.tb_next
                 if socket_client:
                     # Top-level uncaught exceptions can bypass user_exception(),
                     # so explicitly notify the adapter that we stopped.
-                    tb = t
-                    while tb and tb.tb_next is not None:
-                        tb = tb.tb_next
-
-                    if tb is not None:
+                    if deepest_tb is not None:
                         socket_client.send_stopped_with_location(
                             "exception",
-                            tb.tb_frame.f_code.co_filename,
-                            tb.tb_lineno,
+                            deepest_tb.tb_frame.f_code.co_filename,
+                            deepest_tb.tb_lineno,
                         )
                     else:
                         socket_client.send_stopped("exception")
-                my_pdb.interaction(None, t)
+                my_pdb.interaction(None, deepest_tb)
                 print(
                     "Post mortem debugger finished. The "
                     + target
