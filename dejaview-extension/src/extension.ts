@@ -16,8 +16,8 @@ class PythonDebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory 
 
 // This method is called when the extension is activated
 export function activate(context: vscode.ExtensionContext) {
-  // Attach the debug adapter factory to the "python-pdb" debug type
-  context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory("python-pdb", new PythonDebugAdapterFactory(context)));
+  // Attach the debug adapter factory to the "dejaview-python-pdb" debug type
+  context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory("dejaview-python-pdb", new PythonDebugAdapterFactory(context)));
 }
 
 // This method is called when the extension is deactivated

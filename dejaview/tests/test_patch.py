@@ -1,10 +1,10 @@
 import re
 import time
 import traceback
+from pathlib import Path
 
 import pytest
 
-from dejaview.patching import backdoor
 from dejaview.patching.patching import (
     Patches,
     PatchingMode,
@@ -14,7 +14,7 @@ from dejaview.patching.patching import (
 )
 from dejaview.patching.state_store import StateStore
 from dejaview.patching.util import hide_from_traceback
-from dejaview.tests.util import launch_dejaview
+from dejaview.tests.util import launch_dejaview, pretend_replay
 
 
 def extract_out(stdout: str) -> str:
@@ -241,13 +241,10 @@ def test_recursive_patch():
 
         # replay should produce the same sequence
         reset(state)
-        try:
-            backdoor._is_replay = True
+        with pretend_replay():
             assert Foo.f1(1) == 1
             assert Foo.f2() == 123
             assert Foo.f1(2) == 2
-        finally:
-            backdoor._is_replay = False
 
 
 def test_localtime():
@@ -272,4 +269,113 @@ def test_localtime():
     d.sendline("c")
     out = extract_out(d.expect_prompt()).strip()
     assert out == str(time.localtime(1234))
+    d.quit()
+
+
+def test_sys_stdout_write():
+    d = launch_dejaview(
+        r"""
+        import sys
+        sys.stdout.write("12" + "34\n")
+        3
+        4
+        """
+    )
+
+    d.expect_prompt()
+    out1 = d.send_command("until 4")
+    assert "1234" in out1
+    out2 = d.send_command("rs")
+    assert "1234" not in out2  # properly muted on replay
+    d.quit()
+
+
+def test_sys_stdin_readline():
+    d = launch_dejaview(
+        """
+        import sys
+        line = sys.stdin.readline()
+        print("out:", line)
+        """
+    )
+
+    d.expect_prompt()
+    d.sendline("c")
+    d.sendline("hello_stdin")
+    out = d.expect_prompt()
+    x1 = extract_out(out)
+    assert "hello_stdin" in x1
+
+    out = d.send_command("c")
+    x2 = extract_out(out)
+    assert x1 == x2
+    d.quit()
+
+
+def test_io_patch_isinstance():
+    """Objects created under io_patch should still pass isinstance(obj, io.XBase)."""
+    d = launch_dejaview(
+        """
+        import io
+        f = io.BytesIO(b"hello")
+        tw = io.TextIOWrapper(f)
+        checks = [
+            isinstance(f, io.BufferedIOBase),
+            isinstance(f, io.IOBase),
+            isinstance(tw, io.TextIOBase),
+            isinstance(tw, io.IOBase),
+        ]
+        print("out:", all(checks))
+        """
+    )
+
+    d.expect_prompt()
+    out = d.send_command("c")
+    x = extract_out(out).strip()
+    assert x == "True"
+    d.quit()
+
+
+@pytest.mark.xfail(reason="os module not yet patched", strict=True)
+def test_file_read(tmp_path: Path):
+    path = tmp_path / "test_file"
+    path.write_text("hello")
+    d = launch_dejaview(
+        f"""
+        with open("{path}", "r") as f:
+            data = f.read()
+        print("out:", data)
+        """
+    )
+
+    d.expect_prompt()
+    out = d.send_command("c")
+    x1 = extract_out(out)
+    assert "hello" in x1
+
+    path.write_text("world")  # modify file after first read
+    out = d.send_command("c")
+    x2 = extract_out(out)
+    assert x1 == x2
+    d.quit()
+
+
+@pytest.mark.xfail(reason="os module not yet patched", strict=True)
+def test_file_write(tmp_path: Path):
+    path = tmp_path / "test_file"
+
+    d = launch_dejaview(
+        f"""
+        with open("{path}", "w") as f:
+            f.write("hello")
+        """
+    )
+
+    d.expect_prompt()
+    d.send_command("c")
+    assert path.exists()
+    path.unlink()
+
+    d.send_command("c")
+    assert not path.exists(), "file was written again on replay"
     d.quit()

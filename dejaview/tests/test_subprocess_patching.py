@@ -3,7 +3,6 @@ from collections import defaultdict
 
 import pytest
 
-from dejaview.patching import backdoor
 from dejaview.patching.custom_patchers import PopenPatcher
 from dejaview.patching.patching import (
     Patches,
@@ -15,7 +14,7 @@ from dejaview.patching.patching import (
     set_patching_mode,
 )
 from dejaview.patching.state_store import FunctionStateStore, StateStore
-from dejaview.tests.util import launch_dejaview
+from dejaview.tests.util import launch_dejaview, pretend_replay
 
 
 @pytest.fixture(autouse=True)
@@ -51,16 +50,13 @@ class TestSubprocessPatching:
 
             # Replay: different args, but memoized result returned
             reset(snap)
-            try:
-                backdoor._is_replay = True
+            with pretend_replay():
                 replay_proc = subprocess.Popen(
                     ["echo", "WRONG"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
                 replay_out, _ = replay_proc.communicate()
-            finally:
-                backdoor._is_replay = False
 
         assert replay_out == out
         assert b"original" in replay_out
@@ -80,8 +76,7 @@ class TestSubprocessPatching:
             out, _ = proc.communicate()
 
             reset(snap)
-            try:
-                backdoor._is_replay = True
+            with pretend_replay():
                 replay_proc = subprocess.Popen(
                     ["echo", "WRONG"],
                     stdout=subprocess.PIPE,
@@ -89,8 +84,6 @@ class TestSubprocessPatching:
                     text=True,
                 )
                 replay_out, _ = replay_proc.communicate()
-            finally:
-                backdoor._is_replay = False
 
         assert isinstance(out, str)
         assert replay_out == out

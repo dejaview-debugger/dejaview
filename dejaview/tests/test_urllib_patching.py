@@ -6,7 +6,6 @@ from threading import Thread
 
 import pytest
 
-from dejaview.patching import backdoor
 from dejaview.patching.custom_patchers import UrlopenPatcher
 from dejaview.patching.patching import (
     Patches,
@@ -18,6 +17,7 @@ from dejaview.patching.patching import (
     set_patching_mode,
 )
 from dejaview.patching.state_store import FunctionStateStore, StateStore
+from dejaview.tests.util import pretend_replay
 
 
 @pytest.fixture(autouse=True)
@@ -70,12 +70,9 @@ class TestUrllibPatching:
             body = resp.read()
 
             reset(snap)
-            try:
-                backdoor._is_replay = True
+            with pretend_replay():
                 replay_resp = urllib.request.urlopen(local_server + "/replay")
                 replay_body = replay_resp.read()
-            finally:
-                backdoor._is_replay = False
 
         assert body == replay_body == b"test body"
 
@@ -89,11 +86,8 @@ class TestUrllibPatching:
             resp.read()
 
             reset(snap)
-            try:
-                backdoor._is_replay = True
+            with pretend_replay():
                 replay_resp = urllib.request.urlopen(local_server)
-            finally:
-                backdoor._is_replay = False
 
         assert isinstance(replay_resp, urllib.response.addinfourl)
 
@@ -107,13 +101,10 @@ class TestUrllibPatching:
             body = resp.read()
 
             reset(snap)
-            try:
-                backdoor._is_replay = True
+            with pretend_replay():
                 replay_resp = urllib.request.urlopen(local_server)
                 buf = bytearray(len(body))
                 n = replay_resp.readinto(buf)
-            finally:
-                backdoor._is_replay = False
 
         assert buf[:n] == body
 
@@ -127,11 +118,8 @@ class TestUrllibPatching:
             body = resp.read()
 
             reset(snap)
-            try:
-                backdoor._is_replay = True
+            with pretend_replay():
                 replay_resp = urllib.request.urlopen("data:text/plain,different")
                 replay_body = replay_resp.read()
-            finally:
-                backdoor._is_replay = False
 
         assert body == replay_body == b"hello world"
