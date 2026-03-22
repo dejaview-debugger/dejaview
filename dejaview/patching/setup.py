@@ -466,14 +466,7 @@ def patch_os(p: Patches):
     # calls would advance the sequence counter and corrupt the
     # replay state.
 
-    def skip_patching(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            with set_patching_mode(PatchingMode.OFF):
-                return func(*args, **kwargs)
-
-        return wrapper
-
+    skip_patching = set_patching_mode(PatchingMode.OFF)
     p.decorate(linecache, "checkcache", skip_patching)
 
     # Multiprocessing Connection methods must bypass patching because:
