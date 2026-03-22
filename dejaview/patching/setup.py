@@ -3,6 +3,7 @@ import builtins
 import getpass
 import io
 import linecache
+import multiprocessing.connection
 import os
 import random
 import socket
@@ -474,6 +475,13 @@ def patch_os(p: Patches):
         return wrapper
 
     p.decorate(linecache, "checkcache", skip_patching)
+
+    # Multiprocessing Connection methods must bypass patching because:
+    #    Connection._close is called by __del__ (GC finalizer) at
+    #    unpredictable times — including during replay — which would
+    #    advance the os.close sequence counter non-deterministically.
+    # TODO: GC is non-deterministic. see issue #27
+    p.decorate(multiprocessing.connection.Connection, "_close", skip_patching)
 
 
 def setup_patching():
