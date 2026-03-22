@@ -1,4 +1,6 @@
 import inspect
+import multiprocessing
+import os
 import sys
 import types
 from contextlib import contextmanager
@@ -67,9 +69,20 @@ _MULTIPROCESSING_IO_BYPASS_NAMES = {
     "pipe2",
 }
 
+_MP_ROOT = os.path.dirname(multiprocessing.__file__)
+
 
 def _is_multiprocessing_file(path: str) -> bool:
-    return "/multiprocessing/" in path or "\\multiprocessing\\" in path
+    if not path:
+        return False
+
+    try:
+        # commonpath returns the longest common sub-path.
+        # If the common part IS the multiprocessing root, it's an internal file.
+        return os.path.commonpath([path, _MP_ROOT]) == _MP_ROOT
+    except (ValueError, AttributeError):
+        # ValueError happens if paths are on different drives (Windows)
+        return False
 
 
 def get_patching_mode():
