@@ -823,6 +823,8 @@ class DejaView:
             # Initialize the private backing variables for the properties
             self._last_stopped_frame = None
             self._last_stopped_lineno = None
+            # Tracks a just-emitted call stop so user_line does not emit it again.
+            self._pending_call_stop: tuple[str, int] | None = None
 
             # Set up command handler if socket is available
             if self.socket_client and self.socket_client.connected:
@@ -1064,22 +1066,31 @@ class DejaView:
 
             # Send stopped event BEFORE calling super() which blocks in cmdloop
             if self.socket_client and self.socket_client.connected:
-                # Capture the state RIGHT NOW before anything else happens
-                self.last_stopped_frame = frame
-                # Convert to int() to ensure we get the value
-                self.last_stopped_lineno = int(frame.f_lineno)
+                current_location = (frame.f_code.co_filename, int(frame.f_lineno))
+                if self._pending_call_stop == current_location:
+                    debug_log(
+                        "[PDB] Skipping duplicate user_line stopped event "
+                        f"for call-stop location {current_location[0]}:"
+                        f"{current_location[1]}"
+                    )
+                    self._pending_call_stop = None
+                else:
+                    # Capture the state RIGHT NOW before anything else happens
+                    self.last_stopped_frame = frame
+                    # Convert to int() to ensure we get the value
+                    self.last_stopped_lineno = int(frame.f_lineno)
 
-                # Send the line number directly in the stopped event so
-                # VS Code knows where we are. This avoids race conditions
-                # with querying the stack later
-                debug_log(
-                    f"[PDB] user_line #{self.user_line_call_count} "
-                    f"(id={self.instance_id}): Sending stopped event with "
-                    f"lineno = {frame.f_lineno}"
-                )
-                self.socket_client.send_stopped_with_location(
-                    "step", frame.f_code.co_filename, frame.f_lineno
-                )
+                    # Send the line number directly in the stopped event so
+                    # VS Code knows where we are. This avoids race conditions
+                    # with querying the stack later
+                    debug_log(
+                        f"[PDB] user_line #{self.user_line_call_count} "
+                        f"(id={self.instance_id}): Sending stopped event with "
+                        f"lineno = {frame.f_lineno}"
+                    )
+                    self.socket_client.send_stopped_with_location(
+                        "step", frame.f_code.co_filename, frame.f_lineno
+                    )
             else:
                 debug_log("[PDB] Socket not connected, cannot send stopped event")
             # Now call super which will block in cmdloop
@@ -1101,8 +1112,18 @@ class DejaView:
                 f"Set last_stopped_lineno = {self.last_stopped_lineno}"
             )
 
-            # Don't send stopped event here, wait for user_line
-            # which is called right after
+            if self.socket_client and self.socket_client.connected:
+                filename = frame.f_code.co_filename
+                lineno = int(frame.f_lineno)
+                self._pending_call_stop = (filename, lineno)
+                debug_log(
+                    f"[PDB] user_call #{self.user_call_count} "
+                    f"(id={self.instance_id}): Sending stopped event with "
+                    f"lineno = {lineno}"
+                )
+                self.socket_client.send_stopped_with_location("step", filename, lineno)
+
+            # Continue with pdb handling after notifying the adapter.
             super().user_call(frame, argument_list)
 
         def user_return(self, frame, return_value):
@@ -1123,11 +1144,30 @@ class DejaView:
                 stack_frames = []
                 index = 0
 
+                def is_internal_frame(filename: str) -> bool:
+                    """True for runtime/debugger internals we don't want in VS Code."""
+                    if filename.startswith("<frozen "):
+                        return True
+                    base = os.path.basename(filename)
+                    return base in {"pdb.py", "bdb.py", "cmd.py", "runpy.py"}
+
+                def make_source(filename: str) -> dict[str, str]:
+                    # Synthetic names like <string> are not real file paths.
+                    if filename.startswith("<") and filename.endswith(">"):
+                        return {"name": filename}
+                    return {
+                        "path": filename,
+                        "name": os.path.basename(filename),
+                    }
+
                 # Call setup() first to refresh self.stack with current state
                 # This is essential after stepping back, as self.stack needs
                 # to be updated
                 if self.curframe:
-                    self.setup(self.curframe, None)
+                    tb = getattr(self, "tb", None)
+                    # In post-mortem mode, preserving traceback keeps the
+                    # user's failing frame in the stack.
+                    self.setup(self.curframe, tb)
 
                 debug_log(
                     f"[PDB] do_where: After setup(), self.stack has "
@@ -1149,30 +1189,15 @@ class DejaView:
                     filename = code.co_filename
                     function_name = code.co_name
 
-                    # Filter out debugger-internal frames, but allow test programs
-                    if filename == "<string>":
-                        continue
-
-                    # Allow test programs
-                    if "/tests/" in filename or "\\tests\\" in filename:
-                        pass  # Include test programs
-                    # Block pdb internals and dejaview implementation
-                    elif (
-                        filename.endswith("pdb.py")
-                        or filename.endswith("bdb.py")
-                        or filename.endswith("cmd.py")
-                        or "dejaview" in filename
-                    ):
+                    # Filter only true internals; keep user and harness frames.
+                    if is_internal_frame(filename):
                         continue
 
                     stack_frames.append(
                         {
                             "id": index,
                             "name": function_name,
-                            "source": {
-                                "path": filename,
-                                "name": os.path.basename(filename),
-                            },
+                            "source": make_source(filename),
                             "line": lineno,
                             "column": 0,
                         }

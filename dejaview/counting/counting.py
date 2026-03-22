@@ -105,6 +105,7 @@ class FrameCounter:
         self.pdb_factory = lambda: self.CustomPdb(self)
         self.pdb: pdb.Pdb | None = None
         self.allow_breakpoints = True
+        self.last_exception_position: CounterPosition | None = None
 
     @property
     def position(self) -> CounterPosition:
@@ -212,6 +213,10 @@ class FrameCounter:
                     # Ensure __exception__ is always set for pdb display,
                     # even when pdb tracing is suppressed during replay
                     frame.f_locals["__exception__"] = (arg[0], arg[1])
+                    # The first 2 frames are the sentinel and the bottom <string> frame.
+                    # The 3rd frame is the first real frame in user program.
+                    if len(self.stack) > 2:
+                        self.last_exception_position = self.position
                 case _:
                     raise ValueError(f"Unknown event type: {event}")
 
