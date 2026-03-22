@@ -272,9 +272,6 @@ def patch_os(p: Patches):
     p.patch(os, "rmdir")
     p.patch(os, "remove")
     p.patch(os, "unlink")
-    # TODO: Gemini mentions some issues with double counting when
-    # os.makedirs and/or os.removedirs are patched since it double
-    # counts some sequence numbers. Explore this further.
     # NOTE: os.makedirs and os.removedirs are Python wrappers that
     # internally call the patched os.mkdir / os.rmdir. They get
     # determinism automatically from the patched C-level functions
