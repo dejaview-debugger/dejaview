@@ -1,16 +1,18 @@
 {
   "name": "dejaview-extension",
-  "displayName": "Dejaview Extension",
+  "displayName": "Dejaview",
   "description": "Dejaview Extension",
-  "version": "0.0.1",
+  "version": "0.1.1",
+  "publisher": "TeamDejaView",
+  "repository": "https://github.com/dejaview-debugger/dejaview",
   "engines": {
     "vscode": "^1.95.0"
   },
   "categories": [
-    "Other"
+    "Debuggers"
   ],
   "activationEvents": [
-    "onDebug:python-pdb"
+    "onDebug:dejaview-python-pdb"
   ],
   "main": "./out/extension.js",
   "breakpoints": [
@@ -22,8 +24,8 @@
     "commands": [],
     "debuggers": [
       {
-        "type": "python-pdb",
-        "label": "Python (pdb)",
+        "type": "dejaview-python-pdb",
+        "label": "DejaView Python (pdb)",
         "program": "./out/adapter.js",
         "configurationAttributes": {
           "launch": {
@@ -43,6 +45,11 @@
               "cwd": {
                 "type": "string",
                 "description": "Working directory for the debugged program."
+              },
+              "port": {
+                "type": "number",
+                "description": "Port used for adapter-debugger socket communication.",
+                "default": 5678
               }
             }
           }

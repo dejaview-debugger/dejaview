@@ -2,9 +2,9 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "type": "python-pdb",
+            "type": "dejaview-python-pdb",
             "request": "launch",
-            "name": "Launch Python with pdbbb",
+            "name": "Launch Python with DejaView PDB",
             "cwd": "${workspaceFolder}/../../..",
             "pythonPath": "${workspaceFolder}/../../../.venv/bin/python",
             "program": "${file}"
