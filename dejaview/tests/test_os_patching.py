@@ -1,12 +1,7 @@
-import ast
-import operator
 import os as _real_os
 from pathlib import Path
 
-from dejaview.tests.util import (
-    verify_deterministic_memoized_value_util,
-    verify_deterministic_mutated_value_util,
-)
+from dejaview.tests.util import launch_dejaview
 
 # ==============================================================================
 # Process / user identity
@@ -15,11 +10,17 @@ from dejaview.tests.util import (
 
 def test_getpid():
     """Test that os.getpid is deterministic."""
-    verify_deterministic_memoized_value_util(
-        imports="import os",
-        read_stmts="print(os.getpid())",
-        compare=operator.eq,
+    d = launch_dejaview(
+        """
+        import os
+        v1 = os.getpid()
+        v2 = os.getpid()
+        assert v1 == v2
+        print(v1, v2)
+        """
     )
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 # ==============================================================================
@@ -33,216 +34,197 @@ def test_listdir(tmp_path):
     Path(tmpdir, "a.txt").touch()
     Path(tmpdir, "b.txt").touch()
 
-    before, after = verify_deterministic_mutated_value_util(
-        imports="import os",
-        read_stmts=f"print(sorted(os.listdir({repr(tmpdir)})))",
-        mutate_stmts=(
-            f"open(os.path.join({repr(tmpdir)}, 'new_file.txt'), 'w').close()"
-        ),
-        parse_value=lambda out: ast.literal_eval(out.strip()),
+    d = launch_dejaview(
+        f"""
+        import os
+        print(sorted(os.listdir({tmpdir!r})))
+        open(os.path.join({tmpdir!r}, "new_file.txt"), "w").close()
+        after = sorted(os.listdir({tmpdir!r}))
+        print(after)
+        assert "new_file.txt" in after
+        """
     )
-    assert set(before).issubset(set(after)), (
-        f"Expected {before} to be a subset of {after}"
-    )
-    assert "new_file.txt" in after, f"Expected 'new_file.txt' in {after}"
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 def test_stat(tmp_path):
-    """Test that os.stat is deterministic.
-
-    Changes the file's permissions and size, then verifies that stepping
-    back and replaying os.stat produces the same metadata both times.
-    """
+    """Test that os.stat is deterministic across a file mutation."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")
     _real_os.chmod(str(test_file), 0o644)
-    fp = repr(str(test_file))
+    fp = str(test_file)
 
-    verify_deterministic_mutated_value_util(
-        imports="import os",
-        read_stmts=[
-            f"s = os.stat({fp})",
-            "print((s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink))",
-        ],
-        mutate_stmts=[
-            f"os.chmod({fp}, 0o755)",
-            f"with open({fp}, 'a') as f: f.write(' world')",
-        ],
+    d = launch_dejaview(
+        f"""
+        import os
+        s = os.stat({fp!r})
+        before = (s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink)
+        print(before)
+        os.chmod({fp!r}, 0o755)
+        with open({fp!r}, 'a') as f:
+            f.write(' world')
+        s = os.stat({fp!r})
+        after = (s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink)
+        print(after)
+        assert before != after
+        """
     )
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 def test_stat_symlink(tmp_path):
-    """Test that patched os.stat follows symlinks and is deterministic.
-
-    Creates a real file and a symlink to it, then verifies that os.stat on
-    the symlink returns the target file's metadata (follows the link),
-    and that the result is deterministic on replay.
-    """
+    """Test that patched os.stat follows symlinks and is deterministic."""
     target_file = tmp_path / "target.txt"
     target_file.write_text("hello")
     _real_os.chmod(str(target_file), 0o644)
 
     symlink_path = tmp_path / "link.txt"
     symlink_path.symlink_to(target_file)
+    sp = str(symlink_path)
+    tp = str(target_file)
 
-    before, after = verify_deterministic_mutated_value_util(
-        imports="import os",
-        read_stmts=[
-            f"st = os.stat({repr(str(symlink_path))})",
-            "print((st.st_mode, st.st_size, st.st_uid, st.st_gid, st.st_nlink))",
-        ],
-        mutate_stmts=[
-            f"os.chmod({repr(str(target_file))}, 0o755)",
-            f"with open({repr(str(target_file))}, 'a') as f: f.write(' world')",
-        ],
-        parse_value=lambda out: ast.literal_eval(out.strip()),
+    d = launch_dejaview(
+        f"""
+        import os
+        st = os.stat({sp!r})
+        before = (st.st_mode, st.st_size, st.st_uid, st.st_gid, st.st_nlink)
+        print(before)
+        os.chmod({tp!r}, 0o755)
+        with open({tp!r}, 'a') as f:
+            f.write(' world')
+        st = os.stat({sp!r})
+        after = (st.st_mode, st.st_size, st.st_uid, st.st_gid, st.st_nlink)
+        print(after)
+        assert before != after, "Expected symlink stat to reflect target changes"
+        """
     )
-
-    # Verify that stat values changed after mutation (target was modified)
-    assert before != after, (
-        f"Expected symlink stat to reflect target changes, "
-        f"but before={before} and after={after}"
-    )
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 def test_lstat(tmp_path):
-    """Test that os.lstat is deterministic.
-
-    Changes permissions and size, then verifies that stepping back and
-    replaying os.lstat produces the same metadata both times.
-    """
+    """Test that os.lstat is deterministic across a file mutation."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")
     _real_os.chmod(str(test_file), 0o644)
-    fp = repr(str(test_file))
+    fp = str(test_file)
 
-    verify_deterministic_mutated_value_util(
-        imports="import os",
-        read_stmts=[
-            f"s = os.lstat({fp})",
-            "print((s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink))",
-        ],
-        mutate_stmts=[
-            f"os.chmod({fp}, 0o755)",
-            f"with open({fp}, 'a') as f: f.write(' world')",
-        ],
+    d = launch_dejaview(
+        f"""
+        import os
+        s = os.lstat({fp!r})
+        before = (s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink)
+        print(before)
+        os.chmod({fp!r}, 0o755)
+        with open({fp!r}, 'a') as f:
+            f.write(' world')
+        s = os.lstat({fp!r})
+        after = (s.st_mode, s.st_size, s.st_uid, s.st_gid, s.st_nlink)
+        print(after)
+        assert before != after
+        """
     )
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 def test_lstat_symlink(tmp_path):
-    """Test that patched os.lstat does not follow symlinks and is deterministic.
-
-    Creates a real file and a symlink, then verifies that os.lstat on the
-    symlink returns metadata about the symlink itself (not the target),
-    and that this is deterministic on replay.
-    """
+    """Test that patched os.lstat does not follow symlinks and is deterministic."""
     target_file = tmp_path / "target.txt"
     target_file.write_text("hello")
     _real_os.chmod(str(target_file), 0o644)
 
     symlink_path = tmp_path / "link.txt"
     symlink_path.symlink_to(target_file)
+    sp = str(symlink_path)
+    tp = str(target_file)
 
-    before, after = verify_deterministic_mutated_value_util(
-        imports="import os",
-        read_stmts=[
-            f"sl = os.lstat({repr(str(symlink_path))})",
-            "print((sl.st_mode, sl.st_size, sl.st_uid, sl.st_gid, sl.st_nlink))",
-        ],
-        mutate_stmts=[
-            f"os.chmod({repr(str(target_file))}, 0o755)",
-            f"with open({repr(str(target_file))}, 'a') as f: f.write(' world')",
-        ],
-        parse_value=lambda out: ast.literal_eval(out.strip()),
-        assert_changed=False,  # lstat on symlink doesn't change when target changes
+    d = launch_dejaview(
+        f"""
+        import os
+        sl = os.lstat({sp!r})
+        before = (sl.st_mode, sl.st_size, sl.st_uid, sl.st_gid, sl.st_nlink)
+        print(before)
+        os.chmod({tp!r}, 0o755)
+        with open({tp!r}, 'a') as f:
+            f.write(' world')
+        sl = os.lstat({sp!r})
+        after = (sl.st_mode, sl.st_size, sl.st_uid, sl.st_gid, sl.st_nlink)
+        print(after)
+        assert before == after, "lstat on symlink should not change"
+        """
     )
-
-    # Verify os.lstat does NOT follow the symlink
-    # (symlink stats should be the same before and after target mutation)
-    assert before == after, (
-        f"Symlink lstat should not change when target is modified.\\n"
-        f"  before: {before}\\n"
-        f"  after:  {after}"
-    )
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 def test_statvfs(tmp_path):
-    """Test that os.statvfs is deterministic.
-
-    Writes data to change disk usage, then verifies that stepping back
-    and replaying os.statvfs produces the same result both times.
-    """
+    """Test that os.statvfs is deterministic."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")
-    fp = repr(str(test_file))
+    fp = str(test_file)
 
-    verify_deterministic_mutated_value_util(
-        imports="import os",
-        read_stmts=[
-            f"s = os.statvfs({fp})",
-            "print(tuple(s))",
-        ],
-        mutate_stmts=f"with open({fp}, 'a') as f: f.write('x' * 10000)",
-        # Free-block counts can be volatile on busy systems, so we don't
-        # require the two reads to differ — the replay must still match.
-        assert_changed=False,
+    d = launch_dejaview(
+        f"""
+        import os
+        s = os.statvfs({fp!r})
+        print(tuple(s))
+        with open({fp!r}, 'a') as f:
+            f.write('x' * 10000)
+        s = os.statvfs({fp!r})
+        print(tuple(s))
+        """
     )
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 def test_statvfs_symlink(tmp_path):
-    """Test that os.statvfs on a symlink is deterministic and follows the symlink.
-
-    Creates a target file and a symlink, calls os.statvfs on both, verifies
-    they return the same filesystem info, then steps back and replays.
-    """
+    """Test that os.statvfs on a symlink is deterministic and follows the symlink."""
     target_file = tmp_path / "target.txt"
     target_file.write_text("hello")
 
     symlink_path = tmp_path / "link.txt"
     symlink_path.symlink_to(target_file)
+    sp = str(symlink_path)
 
-    def stable_statvfs_fields(t: tuple) -> tuple[int, ...]:
-        """Extract only the stable structural fields from a statvfs tuple.
-
-        statvfs indices: 0=f_bsize, 1=f_frsize, 2=f_blocks, 3=f_bfree,
-        4=f_bavail, 5=f_files, 6=f_ffree, 7=f_favail, 8=f_flag, 9=f_namemax.
-
-        Fields 3,4,6,7 (free block/inode counts) are volatile and can change
-        between calls on a busy system, so we only compare the rest.
+    d = launch_dejaview(
+        f"""
+        import os
+        sl = os.statvfs({sp!r})
+        print(tuple(sl))
         """
+    )
+    d.run_twice_assert_equal()
+    d.quit()
+
+    # Verify that statvfs follows the symlink (same filesystem as target)
+    def stable_fields(t):
+        # Indices 3,4,6,7 (free block/inode counts) are volatile on busy systems
         return tuple(t[i] for i in (0, 1, 2, 5, 8, 9))
 
-    verify_deterministic_memoized_value_util(
-        imports="import os",
-        read_stmts=[
-            f"sl = os.statvfs({repr(str(symlink_path))})",
-            "print(tuple(sl))",
-        ],
-        parse_value=lambda out: stable_statvfs_fields(ast.literal_eval(out.strip())),
-    )
-
-    # Also verify that statvfs follows the symlink (same filesystem as target)
     sl = _real_os.statvfs(str(symlink_path))
     tl = _real_os.statvfs(str(target_file))
-    symlink_fields = stable_statvfs_fields(tuple(sl))
-    target_fields = stable_statvfs_fields(tuple(tl))
-    assert symlink_fields == target_fields, (
-        f"os.statvfs should return the same filesystem for symlink and target.\n"
-        f"  symlink statvfs: {symlink_fields}\n"
-        f"  target statvfs:  {target_fields}"
+    assert stable_fields(tuple(sl)) == stable_fields(tuple(tl)), (
+        "os.statvfs should return the same filesystem for symlink and target"
     )
 
 
 def test_urandom():
     """Test that os.urandom is deterministic."""
-    import_stmt = "import os"
-    expr = "os.urandom(16).hex()"
-
-    verify_deterministic_memoized_value_util(
-        imports=import_stmt,
-        read_stmts=f"print({expr})",
-        compare=operator.ne,
+    d = launch_dejaview(
+        """
+        import os
+        v1 = os.urandom(16).hex()
+        v2 = os.urandom(16).hex()
+        assert v1 != v2, "Successive urandom calls should differ"
+        print(v1, v2)
+        """
     )
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 # ==============================================================================
@@ -251,26 +233,23 @@ def test_urandom():
 
 
 def test_mkdir_replay(tmp_path):
-    """Test that os.mkdir is deterministic on replay.
-
-    Verifies that mkdir can be recorded and replayed deterministically
-    """
+    """Test that os.mkdir is deterministic on replay."""
     non_existent = str(tmp_path / "this_does_not_exist")
 
-    before, after = verify_deterministic_mutated_value_util(
-        imports="import os",
-        read_stmts=[
-            f"print(os.path.isdir({repr(non_existent)}))",
-        ],
-        mutate_stmts=[
-            f"os.mkdir({repr(non_existent)})",
-        ],
-        parse_value=lambda out: out.strip() == "True",
-        assert_changed=True,
+    d = launch_dejaview(
+        f"""
+        import os
+        before = os.path.isdir({non_existent!r})
+        print(before)
+        assert not before
+        os.mkdir({non_existent!r})
+        after = os.path.isdir({non_existent!r})
+        print(after)
+        assert after
+        """
     )
-
-    assert before is False, f"Expected path to not exist, got {before}"
-    assert after is True, f"Expected path to exist on replay, got {after}"
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 # --- Environment mutation ---
@@ -285,23 +264,26 @@ def test_putenv_replay():
         _real_os.unsetenv(key)
         _real_os.environ.pop(key, None)
 
-        before, after = verify_deterministic_mutated_value_util(
-            imports=f"""
+        d = launch_dejaview(
+            f"""
             import os
             import ctypes
-            key = {repr(key)}
-            value = {repr(value)}
+            key = {key!r}
+            value = {value!r}
             libc = ctypes.CDLL(None)
             libc.getenv.argtypes = [ctypes.c_char_p]
             libc.getenv.restype = ctypes.c_char_p
-            """,
-            read_stmts="print(libc.getenv(key.encode()) is not None)",
-            mutate_stmts="os.putenv(key, value)",
-            parse_value=lambda out: ast.literal_eval(out.strip()),
+            before = libc.getenv(key.encode()) is not None
+            print(before)
+            assert not before
+            os.putenv(key, value)
+            after = libc.getenv(key.encode()) is not None
+            print(after)
+            assert after
+            """
         )
-
-        assert before is False
-        assert after is True
+        d.run_twice_assert_equal()
+        d.quit()
     finally:
         if had_original:
             assert original_value is not None
@@ -323,24 +305,27 @@ def test_unsetenv_replay():
         _real_os.putenv(key, seed)
         _real_os.environ[key] = seed
 
-        before, after = verify_deterministic_mutated_value_util(
-            imports=f"""
+        d = launch_dejaview(
+            f"""
             import os
             import ctypes
-            key = {repr(key)}
-            seed = {repr(seed)}
+            key = {key!r}
+            seed = {seed!r}
             libc = ctypes.CDLL(None)
             libc.getenv.argtypes = [ctypes.c_char_p]
             libc.getenv.restype = ctypes.c_char_p
             os.putenv(key, seed)
-            """,
-            read_stmts="print(libc.getenv(key.encode()) is not None)",
-            mutate_stmts="os.unsetenv(key)",
-            parse_value=lambda out: ast.literal_eval(out.strip()),
+            before = libc.getenv(key.encode()) is not None
+            print(before)
+            assert before
+            os.unsetenv(key)
+            after = libc.getenv(key.encode()) is not None
+            print(after)
+            assert not after
+            """
         )
-
-        assert before is True
-        assert after is False
+        d.run_twice_assert_equal()
+        d.quit()
     finally:
         if had_original:
             assert original_value is not None
@@ -362,20 +347,22 @@ def test_scandir_delete_file(tmp_path):
     Path(tmpdir, "a.txt").touch()
     Path(tmpdir, "b.txt").touch()
     Path(tmpdir, "c.txt").touch()
-    deleted_file = Path(tmpdir, "b.txt")
+    deleted_file = str(Path(tmpdir, "b.txt"))
 
-    def parse_printed_names(out: str) -> list[str]:
-        return ast.literal_eval(out.strip())
-
-    before, after = verify_deterministic_mutated_value_util(
-        imports="import os",
-        read_stmts=f"print(sorted(e.name for e in os.scandir({repr(tmpdir)})))",
-        mutate_stmts=f"os.remove({repr(str(deleted_file))})",
-        parse_value=parse_printed_names,
+    d = launch_dejaview(
+        f"""
+        import os
+        before = sorted(e.name for e in os.scandir({tmpdir!r}))
+        print(before)
+        assert before == ["a.txt", "b.txt", "c.txt"]
+        os.remove({deleted_file!r})
+        after = sorted(e.name for e in os.scandir({tmpdir!r}))
+        print(after)
+        assert after == ["a.txt", "c.txt"]
+        """
     )
-
-    assert before == ["a.txt", "b.txt", "c.txt"]
-    assert after == ["a.txt", "c.txt"]
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 def test_scandir_add_file(tmp_path):
@@ -384,21 +371,22 @@ def test_scandir_add_file(tmp_path):
     Path(tmpdir, "a.txt").touch()
     Path(tmpdir, "b.txt").touch()
     Path(tmpdir, "c.txt").touch()
-    new_file = Path(tmpdir, "new_file.txt")
+    new_file = str(Path(tmpdir, "new_file.txt"))
 
-    def parse_printed_names(out: str) -> list[str]:
-        return ast.literal_eval(out.strip())
-
-    before, after = verify_deterministic_mutated_value_util(
-        imports="import os",
-        read_stmts=f"print(sorted(e.name for e in os.scandir({repr(tmpdir)})))",
-        mutate_stmts=f"os.open({repr(str(new_file))}, "
-        f"os.O_CREAT | os.O_EXCL | os.O_WRONLY)",
-        parse_value=parse_printed_names,
+    d = launch_dejaview(
+        f"""
+        import os
+        before = sorted(e.name for e in os.scandir({tmpdir!r}))
+        print(before)
+        assert before == ["a.txt", "b.txt", "c.txt"]
+        os.open({new_file!r}, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        after = sorted(e.name for e in os.scandir({tmpdir!r}))
+        print(after)
+        assert after == ["a.txt", "b.txt", "c.txt", "new_file.txt"]
+        """
     )
-
-    assert before == ["a.txt", "b.txt", "c.txt"]
-    assert after == ["a.txt", "b.txt", "c.txt", "new_file.txt"]
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 # ==============================================================================
@@ -410,58 +398,58 @@ def test_os_open_read(tmp_path):
     """Test that os.open and os.read are deterministic on replay."""
     test_file = tmp_path / "io_test.txt"
     test_file.write_text("hello world")
+    fp = str(test_file)
 
-    def parse_printed_value(out: str) -> bytes:
-        return ast.literal_eval(out.strip())
-
-    verify_deterministic_memoized_value_util(
-        imports="import os",
-        read_stmts=f"print(os.read(os.open({repr(str(test_file))}, os.O_RDONLY), 100))",
-        parse_value=parse_printed_value,
-        compare=lambda v1, v2: v1 == v2 == b"hello world",
+    d = launch_dejaview(
+        f"""
+        import os
+        data = os.read(os.open({fp!r}, os.O_RDONLY), 100)
+        print(data)
+        assert data == b"hello world"
+        """
     )
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 def test_os_write(tmp_path):
     """Test that os.write is deterministic on replay."""
     test_file = tmp_path / "write_test.txt"
+    fp = str(test_file)
 
-    def parse_printed_value(out: str) -> int:
-        return ast.literal_eval(out.strip())
-
-    verify_deterministic_memoized_value_util(
-        imports="import os",
-        read_stmts=f"print(os.write(os.open({repr(str(test_file))}, "
-        f"os.O_WRONLY | os.O_CREAT), b'hello'))",
-        parse_value=parse_printed_value,
-        compare=lambda v1, v2: v1 == v2 == 5,
+    d = launch_dejaview(
+        f"""
+        import os
+        n = os.write(os.open({fp!r}, os.O_WRONLY | os.O_CREAT), b'hello')
+        print(n)
+        assert n == 5
+        """
     )
+    d.run_twice_assert_equal()
+    d.quit()
 
 
 def test_os_read_write(tmp_path):
-    """Test that os.read and os.write are deterministic on replay.
-
-    This test reads, modifies, and re-reads the same file, verifying that
-    the sequence of operations produces deterministic results on both
-    execution and replay.
-    """
+    """Test that os.read and os.write are deterministic on replay."""
     temp_path = str(tmp_path / "readwrite_test.txt")
     with open(temp_path, "wb") as f:
         f.write(b"hello")
 
-    verify_deterministic_memoized_value_util(
-        imports="import os",
-        read_stmts=[
-            f"fd = os.open({repr(temp_path)}, os.O_RDWR)",
-            "first = os.read(fd, 5)",
-            "os.lseek(fd, 0, os.SEEK_SET)",
-            "count = os.write(fd, b'hello')",
-            "os.close(fd)",
-            f"fd2 = os.open({repr(temp_path)}, os.O_RDONLY)",
-            "second = os.read(fd2, 5)",
-            "os.close(fd2)",
-            "print((first, count, second))",
-        ],
-        parse_value=lambda out: ast.literal_eval(out.strip()),
-        compare=lambda v1, v2: v1 == v2 == (b"hello", 5, b"hello"),
+    d = launch_dejaview(
+        f"""
+        import os
+        fd = os.open({temp_path!r}, os.O_RDWR)
+        first = os.read(fd, 5)
+        os.lseek(fd, 0, os.SEEK_SET)
+        count = os.write(fd, b'hello')
+        os.close(fd)
+        fd2 = os.open({temp_path!r}, os.O_RDONLY)
+        second = os.read(fd2, 5)
+        os.close(fd2)
+        result = (first, count, second)
+        print(result)
+        assert result == (b"hello", 5, b"hello")
+        """
     )
+    d.run_twice_assert_equal()
+    d.quit()
