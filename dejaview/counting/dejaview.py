@@ -6,12 +6,12 @@ import pdb
 import sys
 import traceback
 import types
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from random import randbytes
 from typing import (
     Any,
-    Generator,
     NoReturn,
     TextIO,
     assert_never,

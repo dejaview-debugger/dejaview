@@ -9,7 +9,6 @@ from enum import Enum
 from functools import cache
 from pathlib import Path
 from textwrap import dedent
-from typing import List, Optional
 
 import pexpect  # type: ignore[import-untyped]
 
@@ -42,9 +41,9 @@ class DebuggerState:
     The captured debugger state at a specific point
     """
 
-    line_number: Optional[int] = None
-    filename: Optional[str] = None
-    function_name: Optional[str] = None
+    line_number: int | None = None
+    filename: str | None = None
+    function_name: str | None = None
     where_output: str = ""  # Output from 'where' command
     console_output: str = ""  # Console output from the last command
     # Adding local variable values here would be ideal,
@@ -136,8 +135,8 @@ class DejaViewInstance(pexpect.spawn):
         return state
 
     def execute_command_sequence(
-        self, commands: List[DebugCommand]
-    ) -> List[DebuggerState]:
+        self, commands: list[DebugCommand]
+    ) -> list[DebuggerState]:
         """
         Execute a sequence of commands and capture state and console output after each.
         Returns a list of DebuggerState objects with console_output populated.
@@ -312,7 +311,7 @@ class PropertyTester:
 
     @staticmethod
     def test_determinism_property(
-        program: str, command_sequence: List[DebugCommand], num_runs: int = 10
+        program: str, command_sequence: list[DebugCommand], num_runs: int = 10
     ) -> None:
         """
         Test that executing the same command sequence produces the same results.
@@ -325,7 +324,7 @@ class PropertyTester:
         Raises:
             AssertionError: If any run produces different results than the first run.
         """
-        all_states: List[List[DebuggerState]] = []
+        all_states: list[list[DebuggerState]] = []
 
         for run_idx in range(num_runs):
             d = launch_dejaview(program)
@@ -369,7 +368,7 @@ class PropertyTester:
     @staticmethod
     def test_idempotence_property(
         d: DejaViewInstance, forward_steps: int = 1
-    ) -> List[DebuggerState]:
+    ) -> list[DebuggerState]:
         """
         Test that stepping forward -> back -> forward reaches the same state.
         The states at each step should match between the first and second

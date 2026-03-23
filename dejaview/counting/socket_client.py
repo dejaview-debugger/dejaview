@@ -2,7 +2,8 @@ import json
 import socket
 import sys
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from dejaview.patching.patching import PatchingMode, set_patching_mode
 

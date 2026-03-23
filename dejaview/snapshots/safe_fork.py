@@ -17,7 +17,7 @@ def exit_with_parent():
     PR_SET_PDEATHSIG = 1
     retcode = libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
     if retcode != 0:
-        raise RuntimeError("prctl failed with code {}".format(retcode))
+        raise RuntimeError(f"prctl failed with code {retcode}")
 
     # Use libc directly instead of os.getppid()/os.getpid() to
     # avoid going through the patching wrapper, which would

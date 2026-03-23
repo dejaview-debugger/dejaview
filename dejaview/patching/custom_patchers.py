@@ -9,7 +9,8 @@ from __future__ import annotations
 import io
 import socket
 import urllib.response
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from dejaview.patching.patcher import GenericPatcher, GenericPatcherState, Patcher
 from dejaview.patching.util import hide_from_traceback
