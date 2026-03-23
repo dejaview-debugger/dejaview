@@ -9,7 +9,7 @@ from enum import Enum
 from functools import cache
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Callable, List, Optional
+from typing import List, Optional
 
 import pexpect  # type: ignore[import-untyped]
 
@@ -198,6 +198,19 @@ class DejaViewInstance(pexpect.spawn):
         """
         self.sendline("restart")
         return self.expect_prompt()
+
+    def run_twice_assert_equal(self) -> str:
+        """
+        Run the given command twice and assert the outputs are the same.
+        Returns the output from the first run.
+        Fails if there's an uncaught exception.
+        """
+        self.expect_prompt()
+        out1 = self.send_command("c")
+        assert "post mortem" not in out1
+        out2 = self.send_command("c")
+        assert out1 == out2
+        return out1
 
 
 @dataclass
@@ -410,155 +423,3 @@ class PropertyTester:
                 f"Second pass:\n{state2.console_output}"
             )
         return second_pass_states
-
-
-def verify_deterministic_mutated_value_util(
-    imports: str,
-    read_stmts: str | list[str],
-    mutate_stmts: str | list[str],
-    parse_value: Callable[[str], Any] = lambda out: out.strip(),
-    assert_changed: bool = True,
-) -> tuple[Any, Any]:
-    """
-    Test that a patched function is deterministic when replayed across a state
-    mutation.
-
-    Generates a script with the following structure::
-
-        {imports}
-        {read_stmts}        # block A  (last line must be a print())
-        {mutate_stmts}      # block B
-        {read_stmts}        # block A again
-        print()             # sentinel
-
-    Runs the program to completion twice using ``continue``. The first pass is
-    normal execution; after DejaView restarts, the second pass is replay.
-    Captured values from both full runs must match.
-
-    Args:
-        imports: Import statements (may be multi-line).
-        read_stmts: Statement(s) that read and print a value.  The **last**
-            statement must be a ``print()`` call.  Can be a single string or
-            a list of strings.  This block is executed twice (before and after
-            the mutation).
-        mutate_stmts: Statement(s) that change state between the two reads.
-        parse_value: Extracts the interesting value from the printed output
-            line captured for each read block.
-        assert_changed: If *True*, assert that the value changed after
-            mutation (``before != after``).
-
-    Returns:
-        ``(value_before, value_after)`` so callers can make additional
-        assertions.
-    """
-    if isinstance(read_stmts, str):
-        read_stmts = [read_stmts]
-    if isinstance(mutate_stmts, str):
-        mutate_stmts = [mutate_stmts]
-
-    # ── Build the script with stable markers ──────────────────────────────
-    import_lines = [
-        line.strip() for line in imports.strip().split("\n") if line.strip()
-    ]
-
-    script_lines: list[str] = []
-    script_lines.extend(import_lines)
-
-    script_lines.append('print("__DJV_READ1_BEGIN__")')
-    script_lines.extend(read_stmts)
-    script_lines.append('print("__DJV_READ1_END__")')
-
-    script_lines.extend(mutate_stmts)
-
-    script_lines.append('print("__DJV_READ2_BEGIN__")')
-    script_lines.extend(read_stmts)
-    script_lines.append('print("__DJV_READ2_END__")')
-    script_lines.append('print("__DJV_DONE__")')
-
-    script = "\n".join(script_lines)
-
-    def _extract_between_markers(output: str, begin: str, end: str) -> str:
-        pattern = rf"{re.escape(begin)}\r?\n(.*?)\r?\n{re.escape(end)}"
-        m = re.search(pattern, output, re.DOTALL)
-        assert m is not None, (
-            f"Could not find marker block {begin}..{end} in output:\n{output}"
-        )
-        block = m.group(1)
-        lines = [line.strip() for line in block.splitlines() if line.strip()]
-        assert lines, f"No non-empty lines found between {begin} and {end}."
-        return lines[-1]
-
-    # ── Two full passes: play then replay ────────────────────────────────
-    d = launch_dejaview(script)
-
-    d.expect_prompt()
-    d.sendline("c")
-    play_out = d.expect_prompt()
-
-    before_play_line = _extract_between_markers(
-        play_out, "__DJV_READ1_BEGIN__", "__DJV_READ1_END__"
-    )
-    after_play_line = _extract_between_markers(
-        play_out, "__DJV_READ2_BEGIN__", "__DJV_READ2_END__"
-    )
-
-    value_before = parse_value(before_play_line)
-    value_after = parse_value(after_play_line)
-
-    if assert_changed:
-        assert value_before != value_after, (
-            f"Expected values to differ after mutation, but both are {value_before!r}"
-        )
-
-    d.sendline("c")
-    replay_out = d.expect_prompt()
-
-    before_replay_line = _extract_between_markers(
-        replay_out, "__DJV_READ1_BEGIN__", "__DJV_READ1_END__"
-    )
-    after_replay_line = _extract_between_markers(
-        replay_out, "__DJV_READ2_BEGIN__", "__DJV_READ2_END__"
-    )
-
-    value_before_replay = parse_value(before_replay_line)
-    assert value_before == value_before_replay, (
-        f"Replay mismatch (before): {value_before!r} vs {value_before_replay!r}"
-    )
-
-    value_after_replay = parse_value(after_replay_line)
-    assert value_after == value_after_replay, (
-        f"Replay mismatch (after): {value_after!r} vs {value_after_replay!r}"
-    )
-
-    d.quit()
-    return value_before, value_after
-
-
-def verify_deterministic_memoized_value_util(
-    imports: str,
-    read_stmts: str | list[str],
-    parse_value: Callable[[str], Any] = lambda output: output.strip(),
-    compare: Optional[Callable[[Any, Any], bool]] = None,
-) -> None:
-    """
-    Test that a side-effecting expression is deterministic when replayed.
-
-    Args:
-        imports: Import statements needed (e.g. "import os").
-        read_stmts: Statement(s) that read and print a value. The last
-            statement should print the value to compare.
-        parse_value: Optional function to parse the printed value line.
-        compare: Optional function to compare two successive values (v1, v2).
-                 If provided, asserts compare(v1, v2) is True.
-                 Commonly used to check v1 != v2 or v1 < v2 for unique/monotonic values.
-    """
-    val1, val2 = verify_deterministic_mutated_value_util(
-        imports=imports,
-        read_stmts=read_stmts,
-        mutate_stmts=[],
-        parse_value=parse_value,
-        assert_changed=False,
-    )
-
-    if compare:
-        assert compare(val1, val2), f"Comparison failed for {val1} and {val2}"
