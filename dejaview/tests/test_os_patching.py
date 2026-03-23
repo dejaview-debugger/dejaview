@@ -1,4 +1,3 @@
-import os as _real_os
 from pathlib import Path
 
 from dejaview.tests.util import launch_dejaview
@@ -52,7 +51,7 @@ def test_stat(tmp_path):
     """Test that os.stat is deterministic across a file mutation."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")
-    _real_os.chmod(str(test_file), 0o644)
+    test_file.chmod(0o644)
     fp = str(test_file)
 
     d = launch_dejaview(
@@ -121,11 +120,11 @@ def test_mkdir_replay(tmp_path):
 
 def test_scandir_delete_file(tmp_path):
     """Test that os.scandir reflects a deleted file and replays deterministically."""
+    (tmp_path / "a.txt").touch()
+    (tmp_path / "b.txt").touch()
+    (tmp_path / "c.txt").touch()
     tmpdir = str(tmp_path)
-    Path(tmpdir, "a.txt").touch()
-    Path(tmpdir, "b.txt").touch()
-    Path(tmpdir, "c.txt").touch()
-    deleted_file = str(Path(tmpdir, "b.txt"))
+    deleted_file = str(tmp_path / "b.txt")
 
     d = launch_dejaview(
         f"""
@@ -145,11 +144,11 @@ def test_scandir_delete_file(tmp_path):
 
 def test_scandir_add_file(tmp_path):
     """Test that os.scandir reflects an added file and replays deterministically."""
+    (tmp_path / "a.txt").touch()
+    (tmp_path / "b.txt").touch()
+    (tmp_path / "c.txt").touch()
     tmpdir = str(tmp_path)
-    Path(tmpdir, "a.txt").touch()
-    Path(tmpdir, "b.txt").touch()
-    Path(tmpdir, "c.txt").touch()
-    new_file = str(Path(tmpdir, "new_file.txt"))
+    new_file = str(tmp_path / "new_file.txt")
 
     d = launch_dejaview(
         f"""
@@ -209,19 +208,19 @@ def test_os_write(tmp_path):
 
 def test_os_read_write(tmp_path):
     """Test that os.read and os.write are deterministic on replay."""
-    temp_path = str(tmp_path / "readwrite_test.txt")
-    with open(temp_path, "wb") as f:
-        f.write(b"hello")
+    test_file = tmp_path / "readwrite_test.txt"
+    test_file.write_bytes(b"hello")
+    fp = str(test_file)
 
     d = launch_dejaview(
         f"""
         import os
-        fd = os.open({temp_path!r}, os.O_RDWR)
+        fd = os.open({fp!r}, os.O_RDWR)
         first = os.read(fd, 5)
         os.lseek(fd, 0, os.SEEK_SET)
         count = os.write(fd, b'hello')
         os.close(fd)
-        fd2 = os.open({temp_path!r}, os.O_RDONLY)
+        fd2 = os.open({fp!r}, os.O_RDONLY)
         second = os.read(fd2, 5)
         os.close(fd2)
         result = (first, count, second)
