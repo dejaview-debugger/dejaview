@@ -2,9 +2,10 @@ import bdb
 import os
 import pdb
 import sys
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from types import FrameType
-from typing import Any, Callable, Generator, override
+from typing import Any, override
 
 import dejaview.counting
 import dejaview.patching

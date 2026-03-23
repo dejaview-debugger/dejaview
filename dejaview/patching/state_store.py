@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, DefaultDict
+from typing import Any
 
 
 class FunctionStateStore:
@@ -23,16 +23,16 @@ class FunctionStateStore:
 
 
 class StateStore:
-    store: DefaultDict[str, FunctionStateStore] = defaultdict(FunctionStateStore)
+    store: defaultdict[str, FunctionStateStore] = defaultdict(FunctionStateStore)
 
     @classmethod
     def get(cls, func) -> FunctionStateStore:
         return cls.store[func.__qualname__]
 
     @classmethod
-    def serialize(cls) -> DefaultDict[str, FunctionStateStore]:
+    def serialize(cls) -> defaultdict[str, FunctionStateStore]:
         return cls.store
 
     @classmethod
-    def deserialize(cls, data: DefaultDict[str, FunctionStateStore]) -> None:
+    def deserialize(cls, data: defaultdict[str, FunctionStateStore]) -> None:
         cls.store = data

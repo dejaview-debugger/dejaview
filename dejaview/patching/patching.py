@@ -1,11 +1,12 @@
 import inspect
 import sys
 import types
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from enum import Enum
 from functools import wraps
-from typing import Any, Callable, ContextManager, Sequence, cast
+from typing import Any, cast
 from unittest.mock import patch
 
 from dejaview.patching.backdoor import is_replay
@@ -149,11 +150,11 @@ def patch_func(
 
 class Patches:
     def __init__(self) -> None:
-        self.mocks: list[ContextManager[Any]] = []
+        self.mocks: list[AbstractContextManager[Any]] = []
 
     def add(
         self,
-        mock: ContextManager[Any],
+        mock: AbstractContextManager[Any],
     ) -> None:
         mock.__enter__()
         self.mocks.append(mock)

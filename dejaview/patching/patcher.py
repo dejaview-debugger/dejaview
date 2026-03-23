@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Protocol, TypeAlias
+from typing import Any, Protocol
 
 import tblib  # type: ignore[import-untyped]
 import tblib.pickling_support  # type: ignore[import-untyped]
@@ -191,7 +192,7 @@ class _ReplayDirEntry:
         return self._cached.is_symlink_outcome.unwrap()  # type: ignore[no-any-return]
 
 
-_ScanDirEntry: TypeAlias = os.DirEntry[str] | os.DirEntry[bytes]
+type _ScanDirEntry = os.DirEntry[str] | os.DirEntry[bytes]
 
 
 class _ScanDirSource(Protocol):
@@ -214,7 +215,7 @@ class _RecordingScanDirIterator:
         self._state = state
         self._index = 0
 
-    def __iter__(self) -> "_RecordingScanDirIterator":
+    def __iter__(self) -> _RecordingScanDirIterator:
         return self
 
     def __next__(self) -> _ScanDirEntry:
@@ -227,7 +228,7 @@ class _RecordingScanDirIterator:
         self._index += 1
         return entry
 
-    def __enter__(self) -> "_RecordingScanDirIterator":
+    def __enter__(self) -> _RecordingScanDirIterator:
         if hasattr(self._source, "__enter__"):
             self._source.__enter__()
         return self
@@ -257,7 +258,7 @@ class _ReplayScanDirIterator:
         ]
         return iter(replay_entries)
 
-    def __iter__(self) -> "_ReplayScanDirIterator":
+    def __iter__(self) -> _ReplayScanDirIterator:
         return self
 
     def __next__(self) -> _ReplayDirEntry:
@@ -265,7 +266,7 @@ class _ReplayScanDirIterator:
             self._iter = self._build_iter()
         return next(self._iter)
 
-    def __enter__(self) -> "_ReplayScanDirIterator":
+    def __enter__(self) -> _ReplayScanDirIterator:
         return self
 
     def __exit__(self, *args: Any) -> None:
