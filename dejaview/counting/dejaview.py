@@ -663,10 +663,12 @@ class DejaView:
 
         # Human readable debug version
         # data = (
-        #     f"{event.event=}, "
-        #     f"{event.frame.f_lineno=}, "
-        #     f"{event.frame.f_code.co_filename=}"
+        #     f"{event.event=} "
+        #     f"{event.frame.f_code.co_filename}:{event.frame.f_lineno + 1}"
         # ).encode()
+        # if event.event == "exception":
+        #     exc_type, exc_value, exc_traceback = event.arg
+        #     data += f" exc={exc_type.__name__}: {exc_value}".encode()
         return data
 
     def error_detection_handler(self, event: Event) -> bool:

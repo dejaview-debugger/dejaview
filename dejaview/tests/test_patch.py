@@ -143,7 +143,7 @@ def test_id_patch_disable():
 
 def test_hide_from_traceback():
     def f1():
-        raise ValueError("error in f1")
+        raise ValueError("boom")
 
     @hide_from_traceback
     def f2():
@@ -161,6 +161,20 @@ def test_hide_from_traceback():
         assert "in f2" not in tb
         assert "in hide_from_traceback" not in tb
         assert "in f3" in tb
+
+
+def test_hide_from_traceback_own_exception():
+    @hide_from_traceback
+    def f1():
+        raise ValueError("boom")
+
+    try:
+        f1()
+    except ValueError:
+        tb = traceback.format_exc()
+        print(tb)
+        assert "in f1" in tb
+        assert "in hide_from_traceback" not in tb
 
 
 def test_exception_traceback():

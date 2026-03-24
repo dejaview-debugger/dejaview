@@ -6,6 +6,8 @@ import linecache
 import multiprocessing.connection
 import os
 import random
+import select
+import selectors
 import socket
 import subprocess
 import sys
@@ -13,10 +15,12 @@ import time
 import urllib.request
 from contextlib import contextmanager
 from functools import wraps
+from typing import Self
 
 from dejaview import _memory_patch
 from dejaview.patching.custom_patchers import (
     PopenPatcher,
+    RecvIntoPatcher,
     SocketInitPatcher,
     UrlopenPatcher,
     _is_not_af_unix,
@@ -77,7 +81,9 @@ def patch_socket(p: Patches):
         "bind",
         "connect",
         "listen",
-        "accept",
+        # Don't patch accept() because it returns a socket object
+        # that can't be serialized
+        "_accept",
         "send",
         "sendto",
         "sendall",
@@ -87,8 +93,13 @@ def patch_socket(p: Patches):
         "shutdown",
         "setsockopt",
         "getsockname",
+        "fileno",
     ):
         p.patch(socket.socket, method, should_patch=_is_not_af_unix)
+    p.patch(socket.socket, "recv_into", RecvIntoPatcher, should_patch=_is_not_af_unix)
+    p.patch(
+        socket.socket, "recvfrom_into", RecvIntoPatcher, should_patch=_is_not_af_unix
+    )
 
     # Module-level functions are safe to use GenericPatcher
     p.patch(socket, "getaddrinfo")
@@ -105,6 +116,97 @@ def patch_subprocess(p: Patches):
     p.patch(subprocess, "call")
     p.patch(subprocess, "getoutput")
     p.patch(subprocess, "getstatusoutput")
+
+
+_original_poll = select.poll
+_original_epoll = select.epoll
+
+
+class poll:
+    def __init__(self) -> None:
+        self._impl = _original_poll()
+
+    def register(self, fd, eventmask: int = 7, /) -> None:
+        return self._impl.register(fd, eventmask)
+
+    def modify(self, fd, eventmask: int, /) -> None:
+        return self._impl.modify(fd, eventmask)
+
+    def unregister(self, fd, /) -> None:
+        return self._impl.unregister(fd)
+
+    def poll(self, timeout: float | None = None, /) -> list[tuple[int, int]]:
+        return self._impl.poll(timeout)
+
+
+class epoll:
+    def __init__(self, *args, **kwargs) -> None:
+        self._impl = _original_epoll(*args, **kwargs)
+
+    def __enter__(self) -> Self:
+        self._impl.__enter__()
+        return self
+
+    def __exit__(self, *args, **kwargs) -> None:
+        return self._impl.__exit__(*args, **kwargs)
+
+    def close(self) -> None:
+        return self._impl.close()
+
+    def _closed(self) -> bool:
+        return self._impl.closed
+
+    @property
+    def closed(self) -> bool:
+        return self._closed()
+
+    def fileno(self) -> int:
+        return self._impl.fileno()
+
+    def register(self, *args, **kwargs) -> None:
+        return self._impl.register(*args, **kwargs)
+
+    def modify(self, *args, **kwargs) -> None:
+        return self._impl.modify(*args, **kwargs)
+
+    def unregister(self, *args, **kwargs) -> None:
+        return self._impl.unregister(*args, **kwargs)
+
+    def poll(self, *args, **kwargs) -> list[tuple[int, int]]:
+        return self._impl.poll(*args, **kwargs)
+
+    @classmethod
+    def fromfd(cls, fd) -> Self:
+        obj = cls.__new__(cls)
+        obj._impl = _original_epoll.fromfd(fd)
+        return obj
+
+    @classmethod
+    def _fake_fromfd(cls, fd) -> Self:
+        obj = cls.__new__(cls)
+        return obj
+
+
+def patch_select(p: Patches):
+    p.patch(select, "select")
+    p.patch(poll, "register")
+    p.patch(poll, "modify")
+    p.patch(poll, "unregister")
+    p.patch(poll, "poll")
+    p.patch(epoll, "__enter__")
+    p.patch(epoll, "__exit__")
+    p.patch(epoll, "close")
+    p.patch(epoll, "_closed")
+    p.patch(epoll, "fileno")
+    p.patch(epoll, "register")
+    p.patch(epoll, "modify")
+    p.patch(epoll, "unregister")
+    p.patch(epoll, "poll")
+    p.replace(epoll, "fromfd", epoll._fake_fromfd)
+    p.replace(select, "poll", poll)
+    p.replace(select, "epoll", epoll)
+    p.replace(selectors.PollSelector, "_selector_cls", poll)
+    p.replace(selectors.EpollSelector, "_selector_cls", epoll)
 
 
 def patch_io(p: Patches):
@@ -506,17 +608,6 @@ def setup_patching():
     p.patch(random.SystemRandom, "getrandbits")
     p.patch(random, "random")
 
-    # AF_UNIX sockets are used for inter-process communication so patching them breaks
-    # multiprocessing (which we use for communicating to replay forks).
-    def skip_system_socket(self: socket.socket, *args, **kwargs):
-        return self.family != socket.AF_UNIX
-
-    # TODO: Merge !24 which properly patches socket.
-    p.patch(socket.socket, "bind", should_patch=skip_system_socket)
-    p.patch(socket.socket, "recvfrom", should_patch=skip_system_socket)
-    p.patch(socket.socket, "sendto", should_patch=skip_system_socket)
-    # Note: socket.socket constructor patch removed because it breaks class identity.
-
     p.patch(builtins, "input")
     p.patch(getpass, "getpass")
     p.decorate(builtins, "print", mute_decorator)  # mute print when stepping back
@@ -527,6 +618,7 @@ def setup_patching():
     patch_urllib(p)
     patch_sys(p)
     patch_io(p)
+    patch_select(p)
 
     # Note: shutil doesn't need patching because its sources of non-determinism
     # (e.g. os functions) are already patched.

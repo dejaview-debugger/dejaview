@@ -5,6 +5,7 @@ from hashlib import blake2b
 @dataclass
 class RecordMode:
     reference: bytearray
+    verbose_log: list[bytes]
 
 
 @dataclass
@@ -13,6 +14,7 @@ class VerifyMode:
     target_count: int
     last_expected: bytes
     full_digest: bytes
+    verbose_log: list[bytes]
 
 
 @dataclass
@@ -47,10 +49,12 @@ class StreamErrorDetector:
         period: int = DEFAULT_PERIOD,
         digest_size: int = DEFAULT_DIGEST_SIZE,
         salt: bytes | bytearray = b"",
+        verbose: bool = False,
     ):
         self.digest_size = digest_size
+        self._verbose = verbose
         self._state = blake2b(digest_size=self.FULL_DIGEST_SIZE, salt=salt)
-        self._mode: RecordMode | VerifyMode = RecordMode(bytearray())
+        self._mode: RecordMode | VerifyMode = RecordMode(bytearray(), [])
         self._period = period
         self._count = 0
         self._last = b""
@@ -70,12 +74,13 @@ class StreamErrorDetector:
         Get the VerifyMode object using the current RecordMode state as the reference.
         """
         match self._mode:
-            case RecordMode(reference):
+            case RecordMode(reference, verbose_log):
                 return VerifyMode(
                     reference=bytes(reference),
                     target_count=self._count,
                     last_expected=bytes(self._last),
                     full_digest=self._state.digest(),
+                    verbose_log=verbose_log,
                 )
             case VerifyMode():
                 raise ValueError("Cannot serialize reference in verify mode")
@@ -95,9 +100,11 @@ class StreamErrorDetector:
         if self._count % self._period == 0:
             digest = self._state.digest()[: self.digest_size]
             match self._mode:
-                case RecordMode(reference):
+                case RecordMode(reference, verbose_log):
                     reference.extend(digest)
-                case VerifyMode(reference):
+                    if self._verbose:
+                        verbose_log.append(data)
+                case VerifyMode(reference, verbose_log=verbose_log):
                     i = (self._count // self._period - 1) * self.digest_size
                     expected = (
                         reference[i : i + self.digest_size]
@@ -105,11 +112,19 @@ class StreamErrorDetector:
                         else None
                     )
                     if digest != expected:
+                        msg = f"Digest does not match at count {self._count}"
+                        if self._verbose:
+                            idx = self._count // self._period - 1
+                            expected_data = (
+                                verbose_log[idx] if idx < len(verbose_log) else None
+                            )
+                            msg += f"\nactual:   {data!r}"
+                            msg += f"\nexpected: {expected_data!r}"
                         raise StreamMismatchError(
                             count=self._count,
                             expected=expected,
                             actual=digest,
-                            message="Digest does not match",
+                            message=msg,
                         )
 
     def assert_no_remaining_reference(self) -> None:

@@ -227,13 +227,14 @@ class FrameCounter:
                 # handlers during iteration (e.g. _setup_replay_process adding
                 # timeline_head_handler after a checkpoint fork).
                 i = 0
-                while i < len(self.handlers):
-                    if self.handlers[i](
-                        Event(self.count, self.stack, frame, event, arg)
-                    ):
-                        self.handlers.pop(i)
-                    else:
-                        i += 1
+                with patching.set_patching_mode(patching.PatchingMode.OFF):
+                    while i < len(self.handlers):
+                        if self.handlers[i](
+                            Event(self.count, self.stack, frame, event, arg)
+                        ):
+                            self.handlers.pop(i)
+                        else:
+                            i += 1
 
                 # Call the sub-tracer if it exists
                 actual_sub_tracer = self.sub_tracer or sub_tracer

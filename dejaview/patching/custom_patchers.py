@@ -66,7 +66,14 @@ class SocketInitPatcher(Patcher[Any, Any]):
             return GenericPatcher.replay(func, state, *args, **kwargs)
 
         # Create a real socket — family/type/proto come from the args
-        return func(*args, **kwargs)
+        # Strip 'fileno' because the recorded OS fd might be invalid during replay.
+        kwargs_copy = dict(kwargs)
+        kwargs_copy.pop("fileno", None)
+        args_list = list(args)
+        if len(args_list) > 4:
+            args_list[4] = None
+
+        return func(*args_list, **kwargs_copy)
 
 
 # ---------------------------------------------------------------------------
@@ -225,3 +232,51 @@ class UrlopenPatcher(Patcher[Any, tuple]):
 
         data, headers, url, status = state
         return UrlopenPatcher._make_addinfourl(data, headers, url, status)
+
+
+class RecvIntoPatcher(Patcher[Any, tuple]):
+    """Patcher for ``socket.recv_into`` and ``socket.recvfrom_into``.
+
+    These methods write incoming data into a user-provided mutable buffer.
+    We must capture the written data during play and write it back during replay,
+    along with returning the number of bytes read (or the tuple for recvfrom_into).
+    """
+
+    @staticmethod
+    def play(func: Callable, *args: Any, **kwargs: Any):  # noqa: ANN205
+        run, state = GenericPatcher.play(func, *args, **kwargs)
+        if state.exc_info is not None:
+            return run, state
+
+        # return_value is an int for recv_into, or (nbytes, address) for recvfrom_into
+        ret = state.return_value
+        nbytes = ret if isinstance(ret, int) else ret[0]
+
+        # Extract the buffer argument (args[0] is self, args[1] is buffer)
+        buffer = kwargs.get("buffer")
+        if buffer is None and len(args) > 1:
+            buffer = args[1]
+
+        # Capture the data that was written to the buffer
+        data = None
+        if buffer is not None and nbytes > 0:
+            data = bytes(memoryview(buffer)[:nbytes])
+
+        return run, (state, data)
+
+    @staticmethod
+    @hide_from_traceback
+    def replay(func: Callable, state: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(state, GenericPatcherState):
+            return GenericPatcher.replay(func, state, *args, **kwargs)
+
+        generic_state, data = state
+
+        if data is not None:
+            buffer = kwargs.get("buffer")
+            if buffer is None and len(args) > 1:
+                buffer = args[1]
+            if buffer is not None:
+                memoryview(buffer)[: len(data)] = data
+
+        return GenericPatcher.replay(func, generic_state, *args, **kwargs)

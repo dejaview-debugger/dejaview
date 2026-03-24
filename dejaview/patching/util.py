@@ -12,9 +12,14 @@ def hide_from_traceback(func: Callable[..., Any]):
             return func(*args, **kwargs)
         except BaseException as e:
             # Go 2 frames up to skip our own frame and func's frame
-            assert e.__traceback__ is not None
-            assert e.__traceback__.tb_next is not None
-            e.__traceback__ = e.__traceback__.tb_next.tb_next
+            tb = e.__traceback__
+            for _ in range(2):
+                if tb is not None:
+                    tb = tb.tb_next
+            if tb is not None:
+                e.__traceback__ = tb
+            # If it was less than 2 frames deep, it means that the exception came
+            # from func itself, so we shouldn't hide it.
             raise
 
     return wrapper
